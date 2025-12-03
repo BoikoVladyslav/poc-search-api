@@ -137,7 +137,7 @@ async function fetchWithPuppeteer(url) {
     if (!browser) {
         browser = await puppeteer.launch({
             headless: true,
-            executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || '/usr/bin/chromium',
+            executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || '/usr/bin/google-chrome-stable',
             args: [
                 '--no-sandbox',
                 '--disable-setuid-sandbox',
@@ -444,5 +444,6 @@ app.listen(PORT, () => {
     console.log(`\n Usage: POST http://localhost:${PORT}/api/search`);
     console.log(`   Body: { "keyword": "bumper stickers" }\n`);
 });
+
 
 
