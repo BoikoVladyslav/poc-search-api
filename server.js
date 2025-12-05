@@ -247,6 +247,25 @@ async function fetchPage(browser, url) {
         });
 
         await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 15000 });
+        
+        // Скролимо для lazy-loading
+        await page.evaluate(async () => {
+            await new Promise((resolve) => {
+                let totalHeight = 0;
+                const distance = 500;
+                const maxScroll = 5000; // Макс 5000px
+                const timer = setInterval(() => {
+                    window.scrollBy(0, distance);
+                    totalHeight += distance;
+                    if (totalHeight >= maxScroll) {
+                        clearInterval(timer);
+                        resolve();
+                    }
+                }, 100);
+            });
+        });
+        
+        // Чекаємо на контент
         await new Promise(r => setTimeout(r, 2000));
         
         const html = await page.content();
@@ -307,25 +326,28 @@ async function parseHtmlWithAI(html, url, keyword) {
     const truncated = cleaned.substring(0, 100000);
     console.log(`   📝 Sending ${truncated.length} chars to AI (from ${cleaned.length})`);
 
-    const prompt = `You are extracting products from an Australian e-commerce page.
+    const prompt = `You are a product data extractor for Australian e-commerce sites.
 Search term: "${keyword}"
 
-TASK: Find ALL products on this page that match "${keyword}".
-Look for product grids, lists, cards with titles, prices, and images.
+IMPORTANT INSTRUCTIONS:
+1. Find ALL product listings on this page related to "${keyword}"
+2. Products are usually in repeating HTML structures (cards, grid items, list items)
+3. Look for patterns like: product-card, product-item, product-tile, grid-item, etc.
+4. Extract EVERY product you can find, even if data is incomplete
 
 For EACH product extract:
-- title: exact product name
-- price: number only (e.g., 9.99) or null if not shown
+- title: the product name (required)
+- price: numeric price without currency symbol (e.g., 9.99) or null
 - currency: "AUD"
-- imageUrl: full image URL (or path starting with /)
-- productUrl: full product link URL (or path starting with /)
+- imageUrl: image src URL or path
+- productUrl: link href URL or path
 
-Return a JSON array with up to 30 products:
-[{"title":"Product Name","price":19.99,"currency":"AUD","imageUrl":"/img/product.jpg","productUrl":"/product/123"}]
+Return JSON array (max 30 products):
+[{"title":"...","price":9.99,"currency":"AUD","imageUrl":"...","productUrl":"..."}]
 
-If NO products found, return: []
+Return [] ONLY if there are genuinely NO products on the page.
 
-HTML content:
+HTML:
 ${truncated}`;
 
     try {
@@ -387,4 +409,5 @@ ${truncated}`;
 
 const PORT = process.env.PORT || 8080;
 app.listen(PORT, () => console.log(`Server: http://localhost:${PORT}\nAI: ${AI_PROVIDER}\n`));
+
 
