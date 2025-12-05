@@ -13,18 +13,18 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-// === CONFIG ===
-const CONCURRENCY = 5; 
-const PAGE_TIMEOUT = 15000;
-const AI_PROVIDER = process.env.OPENAI_API_KEY ? 'openai' : 'gemini';
+// === НАЛАШТУВАННЯ ===
+const MAX_CONCURRENCY = 4; // Обмежимо потоки для стабільності
+const PAGE_TIMEOUT = 10000; // 10 сек максимум на сайт
 
+const AI_PROVIDER = process.env.OPENAI_API_KEY ? 'openai' : 'gemini';
 let openai = null;
 if (process.env.OPENAI_API_KEY) {
     const OpenAI = require('openai');
     openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 }
 
-console.log(`Provider: ${AI_PROVIDER} | Threads: ${CONCURRENCY}`);
+console.log(`🚀 HYBRID ENGINE: ${AI_PROVIDER} | JSON-LD + AI Fallback`);
 
 // ============ UI ============
 app.get('/', (req, res) => {
@@ -34,42 +34,42 @@ app.get('/', (req, res) => {
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>AU Search API</title>
+    <title>Hybrid Search</title>
     <style>
-        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #f0f2f5; padding: 20px; max-width: 1200px; margin: 0 auto; color: #1c1e21; }
-        .search-box { background: white; padding: 20px; border-radius: 12px; box-shadow: 0 2px 8px rgba(0,0,0,0.08); margin-bottom: 24px; display: flex; gap: 12px; }
-        input { flex: 1; padding: 14px; border: 1px solid #ddd; border-radius: 8px; font-size: 16px; outline: none; transition: border 0.2s; }
-        input:focus { border-color: #1877f2; }
-        button { padding: 14px 32px; background: #1877f2; color: white; border: none; border-radius: 8px; font-weight: 600; cursor: pointer; font-size: 16px; transition: background 0.2s; }
-        button:hover { background: #166fe5; }
-        button:disabled { background: #bcc0c4; cursor: not-allowed; }
+        body { font-family: -apple-system, sans-serif; background: #f4f4f5; padding: 20px; max-width: 1200px; margin: 0 auto; }
+        .search-box { background: white; padding: 20px; border-radius: 12px; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.1); display: flex; gap: 10px; margin-bottom: 20px; }
+        input { flex: 1; padding: 14px; border: 1px solid #e4e4e7; border-radius: 8px; font-size: 16px; }
+        button { padding: 14px 28px; background: #2563eb; color: white; border: none; border-radius: 8px; font-weight: 600; cursor: pointer; }
+        button:disabled { background: #93c5fd; }
         
-        .status-bar { display: flex; justify-content: space-between; margin-bottom: 12px; font-size: 14px; color: #65676b; font-weight: 500; }
-        .progress-track { height: 6px; background: #e4e6eb; border-radius: 3px; overflow: hidden; margin-bottom: 24px; }
-        .progress-fill { height: 100%; background: #1877f2; width: 0%; transition: width 0.3s ease-out; }
+        .status-bar { margin-bottom: 10px; font-size: 13px; color: #71717a; display: flex; justify-content: space-between; }
+        .progress-line { height: 4px; background: #e4e4e7; width: 100%; margin-bottom: 20px; border-radius: 2px; overflow: hidden; }
+        .progress-fill { height: 100%; background: #2563eb; width: 0%; transition: width 0.3s; }
 
-        .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(250px, 1fr)); gap: 20px; }
-        .card { background: white; border-radius: 12px; overflow: hidden; box-shadow: 0 1px 2px rgba(0,0,0,0.1); display: flex; flex-direction: column; transition: transform 0.2s, box-shadow 0.2s; border: 1px solid #f0f2f5; }
-        .card:hover { transform: translateY(-4px); box-shadow: 0 8px 16px rgba(0,0,0,0.1); }
-        .img-area { height: 200px; padding: 15px; display: flex; align-items: center; justify-content: center; background: #fff; border-bottom: 1px solid #f0f2f5; }
+        .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 16px; }
+        .card { background: white; border-radius: 12px; overflow: hidden; border: 1px solid #f4f4f5; display: flex; flex-direction: column; transition: transform 0.2s; position: relative; }
+        .card:hover { transform: translateY(-4px); box-shadow: 0 10px 15px -3px rgba(0,0,0,0.1); }
+        .img-box { height: 180px; padding: 10px; display: flex; align-items: center; justify-content: center; background: #fff; }
         .card img { max-width: 100%; max-height: 100%; object-fit: contain; }
-        .content { padding: 16px; flex: 1; display: flex; flex-direction: column; }
-        .site { font-size: 11px; text-transform: uppercase; color: #65676b; font-weight: 700; margin-bottom: 8px; letter-spacing: 0.5px; }
-        .title { font-size: 15px; margin-bottom: 8px; font-weight: 600; line-height: 1.4; color: #050505; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
-        .price { font-size: 18px; font-weight: 700; color: #216fdb; margin-top: auto; }
-        .actions { margin-top: 16px; }
-        .btn-view { display: block; text-align: center; background: #e4e6eb; color: #050505; text-decoration: none; padding: 10px; border-radius: 6px; font-size: 14px; font-weight: 600; transition: 0.2s; }
-        .btn-view:hover { background: #d8dadf; }
+        .info { padding: 16px; flex: 1; display: flex; flex-direction: column; }
+        .badge { position: absolute; top: 10px; right: 10px; background: #f4f4f5; padding: 4px 8px; border-radius: 4px; font-size: 10px; font-weight: bold; color: #71717a; }
+        .title { font-size: 14px; font-weight: 500; color: #18181b; margin-bottom: 8px; line-height: 1.4; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+        .price { font-size: 18px; font-weight: 700; color: #16a34a; margin-top: auto; }
+        .btn { margin-top: 12px; display: block; text-align: center; background: #f4f4f5; color: #18181b; text-decoration: none; padding: 10px; border-radius: 6px; font-size: 13px; font-weight: 500; }
+        .btn:hover { background: #e4e4e7; }
+        
+        /* Debug info */
+        .source-tag { font-size: 10px; color: #a1a1aa; margin-top: 5px; }
     </style>
 </head>
 <body>
     <div class="search-box">
-        <input type="text" id="keyword" placeholder="Search for products in Australia..." onkeypress="if(event.key==='Enter') run()">
+        <input type="text" id="keyword" placeholder="Product name..." onkeypress="if(event.key==='Enter') run()">
         <button onclick="run()" id="btn">Search</button>
     </div>
     
-    <div class="status-bar"><span id="status">Ready</span><span id="counter">0 found</span></div>
-    <div class="progress-track"><div class="progress-fill" id="progress"></div></div>
+    <div class="status-bar"><span id="status">Ready</span><span id="counter">0 items</span></div>
+    <div class="progress-line"><div class="progress-fill" id="progress"></div></div>
     <div id="results" class="grid"></div>
 
     <script>
@@ -85,8 +85,8 @@ app.get('/', (req, res) => {
             
             btn.disabled = true;
             results.innerHTML = '';
-            progress.style.width = '2%';
-            status.textContent = 'Initializing search...';
+            progress.style.width = '5%';
+            status.textContent = 'Searching...';
             
             let count = 0;
 
@@ -114,36 +114,34 @@ app.get('/', (req, res) => {
                                 
                                 if(data.type === 'progress') {
                                     status.textContent = data.msg;
-                                    if(data.total > 0) {
-                                        progress.style.width = Math.round((data.done / data.total) * 100) + '%';
-                                    }
+                                    if(data.total > 0) progress.style.width = Math.round((data.done / data.total) * 100) + '%';
                                 }
                                 
                                 if(data.type === 'product') {
                                     count++;
-                                    counter.textContent = count + ' found';
+                                    counter.textContent = count + ' items';
                                     const p = data.p;
                                     const domain = new URL(p.productUrl).hostname.replace('www.','');
+                                    const method = data.method || 'AI';
                                     
                                     results.insertAdjacentHTML('beforeend', \`
                                         <div class="card">
-                                            <div class="img-area">
-                                                <img src="\${p.imageUrl}" onerror="this.src='https://placehold.co/400?text=No+Image'">
+                                            <div class="badge">\${domain}</div>
+                                            <div class="img-box">
+                                                <img src="\${p.imageUrl}" loading="lazy" onerror="this.src='https://placehold.co/400?text=No+Image'">
                                             </div>
-                                            <div class="content">
-                                                <div class="site">\${domain}</div>
+                                            <div class="info">
                                                 <div class="title" title="\${p.title}">\${p.title}</div>
-                                                <div class="price">\${p.price || 'See Website'}</div>
-                                                <div class="actions">
-                                                    <a href="\${p.productUrl}" target="_blank" class="btn-view">View Product</a>
-                                                </div>
+                                                <div class="price">\${p.price}</div>
+                                                <div class="source-tag">Via \${method}</div>
+                                                <a href="\${p.productUrl}" target="_blank" class="btn">View Product</a>
                                             </div>
                                         </div>
                                     \`);
                                 }
                                 
                                 if(data.type === 'done') {
-                                    status.textContent = 'Search complete';
+                                    status.textContent = 'Complete';
                                     progress.style.width = '100%';
                                     btn.disabled = false;
                                 }
@@ -152,7 +150,7 @@ app.get('/', (req, res) => {
                     }
                 }
             } catch(e) {
-                status.textContent = 'Error: ' + e.message;
+                status.textContent = e.message;
                 btn.disabled = false;
             }
         }
@@ -174,31 +172,34 @@ app.post('/api/search', async (req, res) => {
 
     let browser = null;
     try {
-        send('progress', { msg: 'Searching Google...', done: 0, total: 10 });
+        send('progress', { msg: 'Google Search...', done: 0, total: 10 });
         
-        const [browserInstance, urls] = await Promise.all([
-            puppeteer.launch({
-                headless: "new",
-                args: [
-                    '--no-sandbox', 
-                    '--disable-setuid-sandbox', 
-                    '--disable-dev-shm-usage',
-                    '--disable-accelerated-2d-canvas',
-                    '--disable-gpu',
-                    '--block-new-web-contents'
-                ]
-            }),
-            googleSearch(keyword)
-        ]);
-
-        browser = browserInstance;
-
+        // 1. Google Search
+        const urls = await googleSearch(keyword);
+        
         if (urls.length === 0) {
             send('done', { total: 0 });
             return res.end();
         }
 
         const topUrls = urls.slice(0, 10);
+        
+        // 2. Launch Browser (GLOBAL)
+        browser = await puppeteer.launch({
+            headless: "new",
+            args: [
+                '--no-sandbox', 
+                '--disable-setuid-sandbox', 
+                '--disable-dev-shm-usage',
+                '--disable-accelerated-2d-canvas',
+                '--disable-gpu',
+                '--blink-settings=imagesEnabled=false' // Блокуємо картинки для швидкості
+            ]
+        });
+
+        send('progress', { msg: `Scanning ${topUrls.length} sites...`, done: 0, total: topUrls.length });
+
+        // 3. Queue Processor
         let completed = 0;
         const queue = [...topUrls];
         
@@ -208,11 +209,11 @@ app.post('/api/search', async (req, res) => {
                 try {
                     await processSite(browser, url, keyword, send);
                 } catch (e) {
-                    // console.log(`Skipping ${url}: ${e.message}`);
+                    // console.error(`Skipping ${url}`);
                 } finally {
                     completed++;
                     send('progress', { 
-                        msg: `Scanning sites (${completed}/${topUrls.length})...`, 
+                        msg: `Scanning...`, 
                         done: completed, 
                         total: topUrls.length 
                     });
@@ -220,7 +221,7 @@ app.post('/api/search', async (req, res) => {
             }
         };
 
-        const workers = Array(CONCURRENCY).fill(null).map(() => worker());
+        const workers = Array(MAX_CONCURRENCY).fill(null).map(() => worker());
         await Promise.all(workers);
 
         send('done', {});
@@ -233,98 +234,158 @@ app.post('/api/search', async (req, res) => {
     }
 });
 
-// ============ PROCESSOR ============
+// ============ CORE PROCESSOR ============
 async function processSite(browser, url, keyword, send) {
     let page = null;
     try {
         page = await browser.newPage();
         
-        // Block heavy media but KEEP SCRIPTS (needed for dynamic prices)
+        // Block everything heavy
         await page.setRequestInterception(true);
         page.on('request', req => {
             const type = req.resourceType();
-            if (['image', 'font', 'media'].includes(type)) req.abort();
+            if (['image', 'font', 'media', 'stylesheet', 'other'].includes(type)) req.abort();
             else req.continue();
         });
 
         const ua = new UserAgent({ deviceCategory: 'desktop' });
         await page.setUserAgent(ua.toString());
 
+        // Fast Fail
         await page.goto(url, { waitUntil: 'domcontentloaded', timeout: PAGE_TIMEOUT });
 
-        // Scroll to load dynamic content
-        await page.evaluate(async () => {
-            window.scrollBy(0, 800);
-            await new Promise(r => setTimeout(r, 200));
-            window.scrollBy(0, 800);
-            await new Promise(r => setTimeout(r, 200));
-        });
-
+        // Get HTML
         const html = await page.content();
         await page.close();
-        page = null;
+        page = null; // Free memory immediately
 
-        const products = await parseWithAI(html, url, keyword);
-        
-        if (products.length > 0) {
-            products.forEach(p => send('product', { p }));
+        const $ = cheerio.load(html);
+        const baseUrl = new URL(url).origin;
+
+        // --- STRATEGY 1: JSON-LD (Structured Data) ---
+        // Це найшвидший і найточніший метод. Шукаємо готові дані.
+        let products = [];
+        let method = 'JSON-LD';
+
+        $('script[type="application/ld+json"]').each((i, el) => {
+            try {
+                const data = JSON.parse($(el).html());
+                const items = Array.isArray(data) ? data : [data];
+                
+                items.forEach(item => {
+                    // Шукаємо Product або ItemList
+                    if (item['@type'] === 'Product' || item['@type'] === 'ItemPage') {
+                        extractFromJson(item, products, baseUrl);
+                    }
+                    if (item['@graph'] && Array.isArray(item['@graph'])) {
+                        item['@graph'].forEach(g => {
+                            if (g['@type'] === 'Product') extractFromJson(g, products, baseUrl);
+                        });
+                    }
+                });
+            } catch (e) {}
+        });
+
+        // --- STRATEGY 2: AI FALLBACK ---
+        // Якщо JSON-LD не дав результатів, використовуємо AI, але на очищеному HTML
+        if (products.length === 0) {
+            method = 'AI';
+            // Чистимо HTML набагато розумніше
+            $('script, style, noscript, svg, iframe, header, footer, nav').remove();
+            $('.menu, .sidebar, .popup, .cookie, .related, .recommendations').remove();
+            
+            // Залишаємо тільки контейнери, де можуть бути товари
+            // Видаляємо пусті теги
+            $('div, span, p').each((i, el) => {
+                if($(el).text().trim().length === 0 && $(el).children().length === 0) $(el).remove();
+            });
+
+            // Відновлюємо Lazy Images
+            $('img').each((i, el) => {
+                const $el = $(el);
+                const src = $el.attr('data-src') || $el.attr('lazy-src') || $el.attr('src');
+                if(src) $el.attr('src', src);
+            });
+
+            const body = $('body').html() || '';
+            const truncated = body.replace(/\s+/g, ' ').substring(0, 40000);
+
+            if (truncated.length > 500) {
+                products = await parseWithAI(truncated, url, keyword);
+            }
         }
+
+        // --- FILTER & SEND ---
+        const uniqueProducts = new Map();
+        
+        products.forEach(p => {
+            // Валідація
+            if (!p.title || !p.imageUrl || !p.productUrl) return;
+            if (p.title.length < 3) return;
+            
+            // Fix Price: Якщо ціна null, пробуємо поставити "Check Site"
+            // Але краще викинути, якщо ми хочемо якість
+            if (!p.price) p.price = "Check Site"; 
+
+            // Перевірка на ключові слова (м'яка)
+            const keywords = keyword.toLowerCase().split(' ').filter(w => w.length > 2);
+            const titleLower = p.title.toLowerCase();
+            const isRelevant = keywords.some(k => titleLower.includes(k));
+            
+            // Додаємо тільки релевантні
+            if (isRelevant && !uniqueProducts.has(p.productUrl)) {
+                uniqueProducts.set(p.productUrl, p);
+                send('product', { p, method });
+            }
+        });
 
     } catch (e) {
         if(page) await page.close().catch(() => {});
     }
 }
 
-// ============ AI LOGIC ============
+// Допоміжна функція для JSON-LD
+function extractFromJson(item, list, baseUrl) {
+    if (!item.name) return;
+    
+    let price = null;
+    let currency = 'AUD';
+    
+    // Різні формати ціни в JSON-LD
+    if (item.offers) {
+        const offer = Array.isArray(item.offers) ? item.offers[0] : item.offers;
+        if (offer.price) price = offer.price;
+        if (offer.priceCurrency) currency = offer.priceCurrency;
+        // HighPrice/LowPrice format
+        if (!price && offer.lowPrice) price = offer.lowPrice;
+    }
+    
+    let image = item.image;
+    if (Array.isArray(image)) image = image[0];
+    if (typeof image === 'object' && image.url) image = image.url;
+
+    if (image && item.name) {
+        list.push({
+            title: item.name,
+            price: price ? `$${price} ${currency}` : null,
+            imageUrl: normalizeUrl(image, baseUrl),
+            productUrl: normalizeUrl(item.url || '', baseUrl) || baseUrl
+        });
+    }
+}
+
 async function parseWithAI(html, url, keyword) {
-    const $ = cheerio.load(html);
-
-    // 1. Remove ONLY strict garbage. Keep 'divs' and 'spans' intact.
-    $('script, style, noscript, svg, iframe, header, footer').remove();
-    
-    // 2. Fix Images
-    $('img').each((i, el) => {
-        const $el = $(el);
-        const realSrc = $el.attr('data-src') || $el.attr('lazy-src') || $el.attr('data-srcset');
-        if (realSrc) $el.attr('src', realSrc.split(' ')[0]);
-    });
-
-    // 3. Attribute pruning (Keep classes for context!)
-    $('*').each((i, el) => {
-        if(el.type === 'tag') {
-            const attribs = el.attribs || {};
-            // Keep class, id, src, href. Remove huge data attributes.
-            for(const key in attribs) {
-                if(!['class','id','src','href'].includes(key) && attribs[key].length > 100) {
-                    delete attribs[key];
-                }
-            }
-        }
-    });
-
-    // Extract BODY content
-    const bodyHtml = $('body').html() || '';
-    // Limit to 50k chars (approx 12-15k tokens), fits in GPT-4o-mini
-    const truncated = bodyHtml.replace(/\s+/g, ' ').substring(0, 50000);
-
     const prompt = `
-    Analyze this HTML from "${url}".
-    Extract products matching: "${keyword}".
-
-    Instructions:
-    1. FIND THE MAIN GRID: Look for lists of items with images, titles, and prices.
-    2. RELEVANCE: Include items that are relevant variations of the keyword. 
-       - If user wants "iphone", include "iphone 13", "iphone 14 pro".
-       - EXCLUDE "cases", "cables" unless keyword explicitly asks for accessories.
-    3. LINKS: Ensure 'productUrl' is the FULL absolute URL (e.g. start with https://...).
-    4. PRICE: Extract price text (e.g. "$19.99"). If missing, set null.
-    5. IMAGE: Must be a valid image URL.
-
-    Return JSON:
-    [{"title":"...","price":"...","imageUrl":"...","productUrl":"..."}]
+    Analyze HTML from "${url}". Extract products for keyword: "${keyword}".
     
-    HTML:
-    ${truncated}
+    Rules:
+    1. RELEVANCE: Strict. Only items matching "${keyword}". No accessories/parts.
+    2. PRICE: Find specific price text (e.g. "$20.00"). If missing, return null.
+    3. URL/IMG: Must be valid absolute URLs.
+
+    JSON Output: [{"title":"...","price":"...","imageUrl":"...","productUrl":"..."}]
+    
+    HTML: ${html}
     `;
 
     try {
@@ -333,18 +394,17 @@ async function parseWithAI(html, url, keyword) {
             const completion = await openai.chat.completions.create({
                 model: 'gpt-4o-mini',
                 messages: [{ role: 'user', content: prompt }],
-                temperature: 0, 
-                max_tokens: 4000
+                temperature: 0, max_tokens: 3000
             });
             content = completion.choices[0].message.content;
         } else {
-             const resp = await axios.post(
+            const resp = await axios.post(
                 `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${process.env.GEMINI_API_KEY}`,
                 { contents: [{ parts: [{ text: prompt }] }] }
             );
             content = resp.data.candidates[0].content.parts[0].text;
         }
-
+        
         const json = content.replace(/```json|```/gi, '').trim();
         const start = json.indexOf('[');
         const end = json.lastIndexOf(']');
@@ -352,42 +412,35 @@ async function parseWithAI(html, url, keyword) {
         
         const raw = JSON.parse(json.substring(start, end + 1));
         const baseUrl = new URL(url).origin;
-
+        
         return raw.map(p => ({
             title: p.title,
             price: p.price,
             imageUrl: normalizeUrl(p.imageUrl, baseUrl),
             productUrl: normalizeUrl(p.productUrl, baseUrl)
-        })).filter(p => p.imageUrl && p.productUrl && p.title);
-
-    } catch (e) {
-        return [];
-    }
+        }));
+    } catch { return []; }
 }
 
 function normalizeUrl(urlStr, baseUrl) {
     if (!urlStr || urlStr.startsWith('data:')) return null;
     try {
-        urlStr = urlStr.trim();
         if (urlStr.startsWith('//')) return 'https:' + urlStr;
-        if (urlStr.startsWith('http')) return urlStr;
-        // Fix relative paths
         if (urlStr.startsWith('/')) return new URL(urlStr, baseUrl).href;
-        // Fix paths without slash
-        return new URL(urlStr, baseUrl).href;
+        if (!urlStr.startsWith('http')) return new URL(urlStr, baseUrl).href;
+        return urlStr;
     } catch { return null; }
 }
 
 async function googleSearch(keyword) {
     const key = process.env.GOOGLE_API_KEY;
     const cx = process.env.GOOGLE_CX;
-    // Більш широкий запит для магазинів
-    const q = encodeURIComponent(`${keyword} buy online australia`);
+    const q = encodeURIComponent(`${keyword} site:.au`); // Шукаємо тільки австралійські домени
     try {
-        const res = await axios.get(`https://www.googleapis.com/customsearch/v1?key=${key}&cx=${cx}&q=${q}&num=10&gl=au`);
+        const res = await axios.get(`https://www.googleapis.com/customsearch/v1?key=${key}&cx=${cx}&q=${q}&num=10`);
         return (res.data.items || [])
             .map(i => i.link)
-            .filter(l => !l.includes('facebook') && !l.includes('youtube') && !l.includes('wiki'));
+            .filter(l => !l.includes('facebook') && !l.includes('youtube'));
     } catch { return []; }
 }
 
