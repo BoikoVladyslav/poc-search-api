@@ -2,7 +2,6 @@ require('dotenv').config();
 const express = require('express');
 const axios = require('axios');
 const cors = require('cors');
-const puppeteer = require('puppeteer-core');
 
 const app = express();
 app.use(cors());
@@ -237,7 +236,7 @@ app.post('/api/search', async (req, res) => {
             sendEvent('processing', { site: url, siteIndex, totalSites: urls.length });
 
             try {
-                const html = await fetchWithPuppeteer(url);
+                const html = await fetchPage(url);
                 const products = await parseHtmlWithAI(html, url, keyword);
 
                 const newProducts = [];
@@ -476,6 +475,7 @@ app.listen(PORT, () => {
     console.log(` AI Provider: ${AI_PROVIDER}`);
     console.log(` Region: Australia\n`);
 });
+
 
 
 
