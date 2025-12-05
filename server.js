@@ -201,10 +201,10 @@ app.post('/api/search', async (req, res) => {
                     console.log(`   ✅ Found ${newProducts.length} new products`);
                     sendEvent('products', { site: url, newProducts, totalSoFar: allProducts.length });
                 } else {
-                    console.log(`   ⚠️ No products extracted`);
+                    console.log(`   ⚠️ No new products`);
                 }
             } catch (error) {
-                console.log(`   ❌ Failed: ${error.message}`);
+                console.log(`   ❌ Error: ${error.message}`);
             }
         }
 
@@ -237,17 +237,18 @@ async function fetchPage(browser, url) {
             }
         });
 
-        await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 15000 });
+        await page.goto(url, { waitUntil: 'networkidle2', timeout: 20000 });
         
-        // Скролимо для lazy-loading
+        // Більше скролу для lazy-loading
         await page.evaluate(async () => {
-            for (let i = 0; i < 5; i++) {
-                window.scrollBy(0, 1000);
-                await new Promise(r => setTimeout(r, 200));
+            for (let i = 0; i < 8; i++) {
+                window.scrollBy(0, 800);
+                await new Promise(r => setTimeout(r, 300));
             }
+            window.scrollTo(0, 0);
         });
         
-        await new Promise(r => setTimeout(r, 1500));
+        await new Promise(r => setTimeout(r, 2000));
         
         const html = await page.content();
         console.log(`   📊 HTML: ${html.length} chars`);
@@ -264,11 +265,12 @@ async function googleSearch(keyword) {
     const cx = process.env.GOOGLE_CX;
     if (!apiKey || !cx) throw new Error('Google API not configured');
 
-    const url = `https://www.googleapis.com/customsearch/v1?key=${apiKey}&cx=${cx}&q=${encodeURIComponent(keyword + ' buy australia')}&num=10&gl=au&cr=countryAU`;
+    // БЕЗ "buy australia" - повертаємо оригінальний запит
+    const url = `https://www.googleapis.com/customsearch/v1?key=${apiKey}&cx=${cx}&q=${encodeURIComponent(keyword)}&num=10&gl=au&cr=countryAU`;
     const response = await axios.get(url);
     if (!response.data.items) return [];
 
-    const blocked = ['reddit.com', 'wikipedia.org', 'youtube.com', 'facebook.com', 'twitter.com', 'pinterest.com', 'ebay.com.au'];
+    const blocked = ['reddit.com', 'wikipedia.org', 'youtube.com', 'facebook.com', 'twitter.com', 'pinterest.com'];
     return response.data.items
         .map(item => item.link)
         .filter(link => !blocked.some(b => link.includes(b)));
@@ -276,7 +278,7 @@ async function googleSearch(keyword) {
 
 // ============ AI PARSING ============
 async function parseHtmlWithAI(html, url, keyword) {
-    // Крок 1: Очистка HTML
+    // Очистка HTML
     let cleaned = html
         .replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, '')
         .replace(/<style\b[^>]*>[\s\S]*?<\/style>/gi, '')
@@ -289,147 +291,131 @@ async function parseHtmlWithAI(html, url, keyword) {
         .replace(/\s+/g, ' ')
         .trim();
 
-    // Крок 2: Знаходимо контейнер з продуктами
-    let productHtml = cleaned;
-    
-    // Спробуємо знайти main
+    // Знаходимо main контент
     const mainMatch = cleaned.match(/<main[^>]*>([\s\S]*?)<\/main>/i);
     if (mainMatch && mainMatch[1].length > 3000) {
-        productHtml = mainMatch[1];
-        console.log(`   📦 Found <main>: ${productHtml.length} chars`);
-    }
-    
-    // Або section з products
-    if (productHtml.length > 150000) {
-        const sectionMatch = cleaned.match(/<section[^>]*>([\s\S]*?)<\/section>/gi);
-        if (sectionMatch) {
-            const largest = sectionMatch.reduce((a, b) => a.length > b.length ? a : b);
-            if (largest.length > 5000) {
-                productHtml = largest;
-                console.log(`   📦 Found <section>: ${productHtml.length} chars`);
-            }
-        }
+        cleaned = mainMatch[1];
+        console.log(`   📦 Using <main>: ${cleaned.length} chars`);
     }
 
-    // Крок 3: Обмежуємо розмір (60k - оптимально для AI)
-    const truncated = productHtml.substring(0, 60000);
+    // Ліміт 50k - менше для надійності
+    const truncated = cleaned.substring(0, 50000);
     console.log(`   📝 Sending ${truncated.length} chars to AI`);
 
-    // Крок 4: Простий чіткий prompt
-    const prompt = `Extract all products from this HTML page.
-Search: "${keyword}"
+    const prompt = `Extract ALL products from this e-commerce page.
+Keyword: "${keyword}"
 
-Return ONLY a JSON array (no other text):
-[{"title":"Product Name","price":19.99,"imageUrl":"/img.jpg","productUrl":"/product"}]
+Return a JSON array only, no markdown, no explanation:
+[{"title":"Name","price":9.99,"imageUrl":"url","productUrl":"url"}]
 
-Rules:
 - title: product name (required)
-- price: number only, or null if not shown
-- imageUrl: image src attribute
-- productUrl: link href attribute
-- Max 30 products
+- price: number or null
+- imageUrl: image URL or path
+- productUrl: product link URL or path
+- Max 25 products
 - Return [] if no products
 
 HTML:
 ${truncated}`;
 
-    // Крок 5: Виклик AI з retry
-    for (let attempt = 1; attempt <= 2; attempt++) {
+    try {
+        let responseText;
+        
+        if (AI_PROVIDER === 'openai') {
+            const completion = await openai.chat.completions.create({
+                model: 'gpt-4o-mini',
+                messages: [
+                    { role: 'system', content: 'You are a JSON extractor. Return only valid JSON arrays, no markdown.' },
+                    { role: 'user', content: prompt }
+                ],
+                temperature: 0,
+                max_tokens: 8000  // ЗБІЛЬШЕНО!
+            });
+            responseText = completion.choices[0].message.content;
+        } else {
+            const resp = await axios.post(
+                `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${process.env.GEMINI_API_KEY}`,
+                { contents: [{ parts: [{ text: prompt }] }], generationConfig: { temperature: 0, maxOutputTokens: 8000 } }
+            );
+            responseText = resp.data.candidates[0].content.parts[0].text;
+        }
+
+        console.log(`   🤖 Response length: ${responseText.length} chars`);
+
+        // Очищаємо від markdown
+        let jsonStr = responseText
+            .replace(/```json\s*/gi, '')
+            .replace(/```\s*/gi, '')
+            .trim();
+
+        // Знаходимо JSON масив
+        const startIdx = jsonStr.indexOf('[');
+        const endIdx = jsonStr.lastIndexOf(']');
+        
+        if (startIdx === -1 || endIdx === -1 || endIdx <= startIdx) {
+            console.log(`   ⚠️ No valid JSON array found`);
+            console.log(`   📄 Response preview: ${jsonStr.substring(0, 200)}`);
+            return [];
+        }
+        
+        jsonStr = jsonStr.substring(startIdx, endIdx + 1);
+
+        // Парсимо JSON
+        let products;
         try {
-            let responseText;
-            
-            if (AI_PROVIDER === 'openai') {
-                const completion = await openai.chat.completions.create({
-                    model: 'gpt-4o-mini',
-                    messages: [
-                        { role: 'system', content: 'You extract product data from HTML and return JSON arrays only.' },
-                        { role: 'user', content: prompt }
-                    ],
-                    temperature: 0,
-                    max_tokens: 4000
-                });
-                responseText = completion.choices[0].message.content;
-            } else {
-                const resp = await axios.post(
-                    `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${process.env.GEMINI_API_KEY}`,
-                    { contents: [{ parts: [{ text: prompt }] }], generationConfig: { temperature: 0, maxOutputTokens: 8000 } }
-                );
-                responseText = resp.data.candidates[0].content.parts[0].text;
-            }
-
-            // Логуємо відповідь
-            const preview = responseText.substring(0, 150).replace(/\n/g, ' ');
-            console.log(`   🤖 AI[${attempt}]: ${preview}...`);
-
-            // Парсимо JSON
-            let jsonStr = responseText;
-            
-            // Видаляємо markdown
-            jsonStr = jsonStr.replace(/```json\s*/gi, '').replace(/```\s*/gi, '');
-            
-            // Знаходимо масив
-            const startIdx = jsonStr.indexOf('[');
-            const endIdx = jsonStr.lastIndexOf(']');
-            
-            if (startIdx === -1 || endIdx === -1) {
-                console.log(`   ⚠️ No array brackets found`);
-                if (attempt < 2) continue;
-                return [];
-            }
-            
-            jsonStr = jsonStr.substring(startIdx, endIdx + 1);
-            
-            // Виправляємо типові помилки JSON
-            jsonStr = jsonStr
+            products = JSON.parse(jsonStr);
+        } catch (e) {
+            // Спробуємо виправити
+            const fixed = jsonStr
                 .replace(/,\s*]/g, ']')
                 .replace(/,\s*}/g, '}')
-                .replace(/'/g, '"')
                 .replace(/\n/g, ' ')
-                .replace(/\t/g, ' ');
-
-            let products;
-            try {
-                products = JSON.parse(jsonStr);
-            } catch (parseErr) {
-                console.log(`   ⚠️ JSON parse error: ${parseErr.message}`);
-                if (attempt < 2) continue;
-                return [];
-            }
-
-            if (!Array.isArray(products)) {
-                console.log(`   ⚠️ Result is not an array`);
-                if (attempt < 2) continue;
-                return [];
-            }
-
-            // Нормалізуємо URLs
-            const baseUrl = new URL(url).origin;
+                .replace(/\r/g, '');
             
-            return products
-                .filter(p => p.title && p.title.length > 2)
-                .slice(0, 30)
-                .map(p => ({
-                    title: String(p.title).trim(),
-                    price: typeof p.price === 'number' ? p.price : null,
-                    currency: 'AUD',
-                    imageUrl: normalizeUrl(p.imageUrl, baseUrl),
-                    productUrl: normalizeUrl(p.productUrl, baseUrl) || url,
-                    supplier: new URL(url).hostname.replace('www.', '')
-                }));
-
-        } catch (error) {
-            console.log(`   ⚠️ AI attempt ${attempt} error: ${error.message}`);
-            if (attempt === 2) return [];
-            await new Promise(r => setTimeout(r, 500));
+            try {
+                products = JSON.parse(fixed);
+            } catch (e2) {
+                console.log(`   ⚠️ JSON parse failed: ${e2.message}`);
+                console.log(`   📄 JSON preview: ${jsonStr.substring(0, 300)}`);
+                return [];
+            }
         }
+
+        if (!Array.isArray(products)) {
+            console.log(`   ⚠️ Not an array`);
+            return [];
+        }
+
+        console.log(`   📦 Parsed ${products.length} products from JSON`);
+
+        // Нормалізуємо
+        const baseUrl = new URL(url).origin;
+        
+        const result = products
+            .filter(p => p && p.title && String(p.title).length > 2)
+            .slice(0, 25)
+            .map(p => ({
+                title: String(p.title).trim(),
+                price: typeof p.price === 'number' ? p.price : (parseFloat(p.price) || null),
+                currency: 'AUD',
+                imageUrl: normalizeUrl(p.imageUrl, baseUrl),
+                productUrl: normalizeUrl(p.productUrl, baseUrl) || url,
+                supplier: new URL(url).hostname.replace('www.', '')
+            }));
+
+        console.log(`   ✅ Returning ${result.length} products`);
+        return result;
+
+    } catch (error) {
+        console.log(`   ❌ AI error: ${error.message}`);
+        return [];
     }
-    
-    return [];
 }
 
 // ============ URL HELPER ============
 function normalizeUrl(urlStr, baseUrl) {
     if (!urlStr) return null;
+    urlStr = String(urlStr).trim();
     if (urlStr.startsWith('http')) return urlStr;
     if (urlStr.startsWith('//')) return 'https:' + urlStr;
     if (urlStr.startsWith('/')) return baseUrl + urlStr;
