@@ -13,6 +13,9 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
+// Налаштування для Railway (щоб не вилетіло по пам'яті)
+const CONCURRENCY_LIMIT = 5; // Скільки сайтів сканувати одночасно
+
 const AI_PROVIDER = process.env.OPENAI_API_KEY ? 'openai' : 'gemini';
 
 let openai = null;
@@ -21,9 +24,9 @@ if (process.env.OPENAI_API_KEY) {
     openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 }
 
-console.log(`\n🤖 AI Provider: ${AI_PROVIDER.toUpperCase()}\n`);
+console.log(`\n🚀 TURBO MODE ACTIVATED: ${AI_PROVIDER.toUpperCase()}\n`);
 
-// ============ HTML INTERFACE ============
+// ============ HTML UI ============
 app.get('/', (req, res) => {
     res.send(`
 <!DOCTYPE html>
@@ -31,34 +34,36 @@ app.get('/', (req, res) => {
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>AU Product Search (Optimized)</title>
+    <title>⚡ Turbo Product Search</title>
     <style>
-        * { box-sizing: border-box; margin: 0; padding: 0; }
-        body { font-family: system-ui, -apple-system, sans-serif; background: #f8f9fa; padding: 20px; }
-        .container { max-width: 1000px; margin: 0 auto; }
-        .search-box { display: flex; gap: 10px; margin-bottom: 20px; }
-        input { flex: 1; padding: 12px; border: 1px solid #ddd; border-radius: 6px; }
-        button { padding: 12px 24px; background: #2563eb; color: white; border: none; border-radius: 6px; cursor: pointer; }
-        button:disabled { background: #93c5fd; }
-        .status { padding: 15px; background: #e0f2fe; color: #0369a1; border-radius: 6px; margin-bottom: 20px; font-family: monospace; }
-        .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 20px; }
-        .card { background: white; padding: 10px; border-radius: 8px; border: 1px solid #eee; }
-        .card img { width: 100%; height: 150px; object-fit: contain; margin-bottom: 10px; }
-        .title { font-size: 14px; margin-bottom: 5px; font-weight: 500; height: 40px; overflow: hidden; }
-        .price { color: #16a34a; font-weight: bold; }
-        .link { display: block; margin-top: 10px; font-size: 13px; color: #2563eb; text-decoration: none; }
+        body { font-family: system-ui, sans-serif; background: #f0f2f5; padding: 20px; max-width: 1200px; margin: 0 auto; }
+        .search-box { display: flex; gap: 10px; margin-bottom: 20px; background: white; padding: 15px; border-radius: 12px; box-shadow: 0 2px 5px rgba(0,0,0,0.05); }
+        input { flex: 1; padding: 12px; border: 1px solid #ddd; border-radius: 8px; font-size: 16px; }
+        button { padding: 12px 30px; background: #0066ff; color: white; border: none; border-radius: 8px; font-weight: bold; cursor: pointer; transition: 0.2s; }
+        button:hover { background: #0052cc; }
+        button:disabled { background: #ccc; }
+        #status { margin-bottom: 20px; color: #666; font-size: 14px; font-family: monospace; }
+        .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 20px; }
+        .card { background: white; border-radius: 12px; overflow: hidden; box-shadow: 0 2px 8px rgba(0,0,0,0.08); transition: transform 0.2s; display: flex; flex-direction: column; }
+        .card:hover { transform: translateY(-3px); }
+        .img-wrap { height: 180px; background: #f8f9fa; display: flex; align-items: center; justify-content: center; overflow: hidden; }
+        .card img { width: 100%; height: 100%; object-fit: contain; }
+        .info { padding: 12px; flex: 1; display: flex; flex-direction: column; }
+        .title { font-size: 14px; margin-bottom: 8px; line-height: 1.4; color: #333; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+        .price { font-size: 18px; font-weight: 700; color: #00a651; margin-top: auto; }
+        .domain { font-size: 11px; color: #999; margin-top: 5px; }
+        .link { margin-top: 10px; text-decoration: none; color: white; background: #333; text-align: center; padding: 8px; border-radius: 6px; font-size: 13px; }
     </style>
 </head>
 <body>
-    <div class="container">
-        <h1>🇦🇺 Smart Product Search</h1>
-        <div class="search-box">
-            <input type="text" id="keyword" placeholder="What are you looking for?" />
-            <button onclick="run()" id="btn">Search</button>
-        </div>
-        <div id="status" class="status" style="display:none"></div>
-        <div id="results" class="grid"></div>
+    <h1>⚡ Turbo Search Australia</h1>
+    <div class="search-box">
+        <input type="text" id="keyword" placeholder="Enter product name..." onkeypress="if(event.key==='Enter') run()">
+        <button onclick="run()" id="btn">Search</button>
     </div>
+    <div id="status">Ready</div>
+    <div id="results" class="grid"></div>
+
     <script>
         async function run() {
             const keyword = document.getElementById('keyword').value;
@@ -69,9 +74,13 @@ app.get('/', (req, res) => {
             const results = document.getElementById('results');
             
             btn.disabled = true;
-            status.style.display = 'block';
+            btn.innerText = 'Searching...';
+            status.innerText = 'Initializing...';
             results.innerHTML = '';
             
+            let count = 0;
+            const startTime = Date.now();
+
             try {
                 const response = await fetch('/api/search', {
                     method: 'POST',
@@ -86,35 +95,47 @@ app.get('/', (req, res) => {
                     const {done, value} = await reader.read();
                     if(done) break;
                     
-                    const chunk = decoder.decode(value);
+                    const chunk = decoder.decode(value, {stream: true});
                     const lines = chunk.split('\\n');
                     
                     for(const line of lines) {
                         if(line.startsWith('data: ')) {
                             try {
                                 const data = JSON.parse(line.slice(6));
-                                if(data.type === 'status') status.textContent = data.msg;
+                                
+                                if(data.type === 'status') {
+                                    status.innerText = data.msg + \` (\${((Date.now()-startTime)/1000).toFixed(1)}s)\`;
+                                }
                                 if(data.type === 'product') {
+                                    count++;
+                                    const p = data.p;
                                     results.innerHTML += \`
                                         <div class="card">
-                                            <img src="\${data.p.imageUrl}" onerror="this.src='https://placehold.co/200x150?text=No+Image'">
-                                            <div class="title" title="\${data.p.title}">\${data.p.title}</div>
-                                            <div class="price">\${data.p.price || 'Check site'}</div>
-                                            <a href="\${data.p.productUrl}" target="_blank" class="link">View Product →</a>
+                                            <div class="img-wrap">
+                                                <img src="\${p.imageUrl}" loading="lazy" onerror="this.style.display='none'">
+                                            </div>
+                                            <div class="info">
+                                                <div class="title" title="\${p.title}">\${p.title}</div>
+                                                <div class="price">\${p.price || '?'}</div>
+                                                <div class="domain">\${new URL(p.productUrl).hostname.replace('www.','')}</div>
+                                                <a href="\${p.productUrl}" target="_blank" class="link">View Product</a>
+                                            </div>
                                         </div>
                                     \`;
                                 }
                                 if(data.type === 'done') {
-                                    status.textContent = \`Done! Found \${data.total} products.\`;
+                                    status.innerText = \`✅ Complete! Found \${count} products in \${((Date.now()-startTime)/1000).toFixed(1)}s\`;
                                     btn.disabled = false;
+                                    btn.innerText = 'Search';
                                 }
                             } catch(e) {}
                         }
                     }
                 }
             } catch(e) {
-                status.textContent = 'Error: ' + e.message;
+                status.innerText = 'Error: ' + e.message;
                 btn.disabled = false;
+                btn.innerText = 'Search';
             }
         }
     </script>
@@ -135,171 +156,133 @@ app.post('/api/search', async (req, res) => {
 
     let browser = null;
     try {
-        send('status', { msg: `Searching Google for "${keyword}"...` });
+        send('status', { msg: `🔍 Google Search: "${keyword}"` });
         
-        // Пошук: додаємо -site:ebay -site:amazon щоб фокусуватись на локальних магазинах, якщо треба
-        // Але поки лишимо як є, просто фільтруємо
-        const urls = await googleSearch(keyword);
-        send('status', { msg: `Found ${urls.length} sites. Launching browser...` });
+        // 1. Паралельний старт: поки шукаємо в Google, вже гріємо браузер
+        const [browserInstance, urls] = await Promise.all([
+            puppeteer.launch({
+                headless: "new",
+                args: [
+                    '--no-sandbox', 
+                    '--disable-setuid-sandbox', 
+                    '--disable-dev-shm-usage',
+                    '--disable-accelerated-2d-canvas',
+                    '--disable-gpu',
+                    '--blink-settings=imagesEnabled=false' // ⚡ ВИМИКАЄМО КАРТИНКИ ГЛОБАЛЬНО
+                ]
+            }),
+            googleSearch(keyword)
+        ]);
 
-        browser = await puppeteer.launch({
-            headless: "new",
-            args: [
-                '--no-sandbox', 
-                '--disable-setuid-sandbox', 
-                '--disable-dev-shm-usage',
-                '--disable-accelerated-2d-canvas',
-                '--disable-gpu'
-            ]
-        });
-
-        let totalFound = 0;
-        const processedUrls = new Set();
-
-        // Скануємо до 5 сайтів для швидкості
-        for (const url of urls.slice(0, 5)) {
-            send('status', { msg: `Scanning: ${new URL(url).hostname}...` });
-            
-            try {
-                const html = await fetchPage(browser, url);
-                if (!html) continue;
-
-                const products = await parseWithAI(html, url, keyword);
-                
-                for (const p of products) {
-                    // Фільтрація дублікатів по URL
-                    if (!processedUrls.has(p.productUrl)) {
-                        processedUrls.add(p.productUrl);
-                        totalFound++;
-                        send('product', { p });
-                    }
-                }
-            } catch (e) {
-                console.error(`Error processing ${url}:`, e.message);
-            }
+        browser = browserInstance;
+        
+        if (urls.length === 0) {
+            send('done', { total: 0 });
+            return res.end();
         }
 
-        send('done', { total: totalFound });
+        send('status', { msg: `🚀 Scanning ${urls.length} sites in parallel...` });
+
+        // 2. Обробка чергами (Concurrency Limit)
+        // Railway Starter має мало RAM, тому запускаємо по 5 сайтів одночасно
+        const processBatch = async (batchUrls) => {
+            const promises = batchUrls.map(url => processSingleUrl(browser, url, keyword, send));
+            await Promise.all(promises); // Чекаємо поки вся пачка завершиться
+        };
+
+        // Розбиваємо на пачки
+        for (let i = 0; i < urls.length; i += CONCURRENCY_LIMIT) {
+            const batch = urls.slice(i, i + CONCURRENCY_LIMIT);
+            send('status', { msg: `⚡ Processing batch ${Math.ceil((i+1)/5)}...` });
+            await processBatch(batch);
+        }
+
+        send('done', { total: 'N/A' });
 
     } catch (e) {
+        console.error(e);
         send('status', { msg: 'Error: ' + e.message });
     } finally {
-        if (browser) await browser.close();
+        if (browser) await browser.close().catch(() => {});
         res.end();
     }
 });
 
-// ============ FETCH PAGE (Optimized) ============
-async function fetchPage(browser, url) {
-    const page = await browser.newPage();
+// ============ SINGLE URL PROCESSOR ============
+async function processSingleUrl(browser, url, keyword, send) {
+    let page = null;
     try {
-        const ua = new UserAgent({ deviceCategory: 'desktop' });
-        await page.setUserAgent(ua.toString());
-        await page.setViewport({ width: 1440, height: 900 });
-
-        // Блокуємо сміття
+        page = await browser.newPage();
+        
+        // Блокування ресурсів (Super Aggressive)
         await page.setRequestInterception(true);
         page.on('request', req => {
-            const rType = req.resourceType();
-            if (['font', 'media', 'stylesheet', 'other'].includes(rType)) req.abort();
-            else req.continue();
+            const type = req.resourceType();
+            // Блокуємо все крім Document (HTML) і XHR (Fetch)
+            if (['image', 'stylesheet', 'font', 'media', 'other'].includes(type)) {
+                req.abort(); 
+            } else {
+                req.continue();
+            }
         });
 
-        await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 20000 });
+        const ua = new UserAgent({ deviceCategory: 'desktop' });
+        await page.setUserAgent(ua.toString());
 
-        // Швидкий скрол для lazy loading
+        // Timeout 15s на все про все
+        await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 15000 });
+
+        // ⚡ TURBO SCROLL (Всього 1 секунда!)
+        // Нам не треба все, нам треба ПЕРШІ товари швидко
         await page.evaluate(async () => {
-            await new Promise(resolve => {
-                let totalHeight = 0;
-                const timer = setInterval(() => {
-                    window.scrollBy(0, 500);
-                    totalHeight += 500;
-                    if(totalHeight >= 4000) { // Скролимо глибше (4000px)
-                        clearInterval(timer);
-                        resolve();
-                    }
-                }, 100);
-            });
+            window.scrollBy(0, 1000);
+            await new Promise(r => setTimeout(r, 500));
+            window.scrollBy(0, 1000);
+            await new Promise(r => setTimeout(r, 500));
         });
 
-        // Чекаємо трохи після скролу
-        await new Promise(r => setTimeout(r, 1000));
+        const html = await page.content();
+        await page.close(); // Закриваємо сторінку одразу, звільняємо пам'ять
 
-        return await page.content();
+        // Парсинг AI (Паралельно з іншими сайтами)
+        const products = await parseWithAI(html, url, keyword);
+        
+        if (products.length > 0) {
+            products.forEach(p => send('product', { p }));
+        }
+
     } catch (e) {
-        return null;
-    } finally {
-        await page.close();
+        if(page) await page.close().catch(() => {});
+        // Не кидаємо помилку, щоб не зупинити інші потоки
+        // console.log(`Skipped ${url}: ${e.message}`);
     }
 }
 
-// ============ AI PARSER (HEAVILY OPTIMIZED) ============
+// ============ AI PARSER (Fast & Light) ============
 async function parseWithAI(html, url, keyword) {
     const $ = cheerio.load(html);
 
-    // 1. ВИДАЛЯЄМО СМІТТЯ (Related, Nav, Footer)
-    // Це критично для точності результатів
-    const badSelectors = [
-        'header', 'footer', 'nav', 'script', 'style', 'noscript', 'svg', 'iframe',
-        '.related', '.recommendations', '.suggested', '.recent', // Блоки "Схожі товари"
-        '.sidebar', '.menu', '.popup', '.modal', '.cookie',
-        '[role="navigation"]', '[aria-label*="menu"]'
-    ];
-    $(badSelectors.join(',')).remove();
-
-    // 2. ОБРОБКА LAZY LOAD KARTINOK
+    // Видаляємо все зайве
+    $('script, style, noscript, svg, iframe, header, footer, nav, .menu, .sidebar, .popup').remove();
+    
+    // Отримуємо тільки src картинок (навіть якщо вони не завантажились браузером, лінка в коді є)
     $('img').each((i, el) => {
         const $el = $(el);
-        // Часто src пустий, а справжнє посилання в data-src
-        const realSrc = $el.attr('data-src') || $el.attr('lazy-src') || $el.attr('data-srcset');
-        if (realSrc) $el.attr('src', realSrc.split(' ')[0]);
+        const realSrc = $el.attr('data-src') || $el.attr('lazy-src') || $el.attr('src');
+        if (realSrc) $el.attr('src', realSrc);
     });
 
-    // 3. СТИСНЕННЯ HTML (Щоб влізло більше товарів)
-    // Ми видаляємо всі атрибути крім src та href
-    $('*').each((i, el) => {
-        if (el.type !== 'tag') return;
-        
-        const attribs = el.attribs || {};
-        const newAttribs = {};
-        
-        // Зберігаємо тільки критичні дані
-        if (attribs.src) newAttribs.src = attribs.src;
-        if (attribs.href) newAttribs.href = attribs.href;
-        
-        // Зберігаємо клас, бо він може допомогти AI зрозуміти структуру (але скорочуємо)
-        // if (attribs.class) newAttribs.class = attribs.class; // Можна включити, якщо AI губиться
-        
-        el.attribs = newAttribs;
-    });
+    // Максимально стискаємо HTML
+    let body = $('body').html() || '';
+    body = body.replace(/\s+/g, ' ').substring(0, 35000); // 35k символів достатньо для перших 20 товарів
 
-    // Отримуємо чистий HTML
-    let cleanHtml = $('body').html() || '';
-    
-    // Видаляємо зайві пробіли
-    cleanHtml = cleanHtml.replace(/\s+/g, ' ').trim();
-    
-    // Ліміт 55k (GPT-4o-mini дозволяє більше, ніж старі моделі)
-    const truncated = cleanHtml.substring(0, 55000);
-
+    // Короткий промпт для швидкості
     const prompt = `
-    Analyze this HTML from website "${new URL(url).hostname}". 
-    User keyword: "${keyword}".
-
-    Task: Extract valid products that strictly match the keyword.
-    
-    Rules:
-    1. IGNORE "Related products", "You may also like", "Accessories" (unless they match keyword).
-    2. IGNORE Navigation links, categories, or blog posts.
-    3. PRICE: Must be a number or string (e.g. "$10"). If missing, set null.
-    4. IMAGE: Must be a valid URL. If missing, SKIP the item.
-    5. URL: Must be a link to the product page.
-
-    Return JSON Array ONLY:
-    [{"title":"...","price":"...","imageUrl":"...","productUrl":"..."}]
-
-    HTML Snippet:
-    ${truncated}
+    Extract products from HTML for keyword "${keyword}".
+    Site: ${new URL(url).hostname}.
+    Ignore related items.
+    JSON Output: [{"title":"...","price":"...","imageUrl":"...","productUrl":"..."}]
+    HTML: ${body}
     `;
 
     try {
@@ -309,7 +292,7 @@ async function parseWithAI(html, url, keyword) {
                 model: 'gpt-4o-mini',
                 messages: [{ role: 'user', content: prompt }],
                 temperature: 0,
-                max_tokens: 4000
+                max_tokens: 2000 // Менше токенів = швидше відповідь
             });
             content = completion.choices[0].message.content;
         } else {
@@ -334,25 +317,11 @@ async function parseWithAI(html, url, keyword) {
             price: p.price,
             imageUrl: normalizeUrl(p.imageUrl, baseUrl),
             productUrl: normalizeUrl(p.productUrl, baseUrl)
-        })).filter(p => p.imageUrl && p.productUrl && p.title.length > 3);
+        })).filter(p => p.imageUrl && p.productUrl && p.title);
 
     } catch (e) {
-        console.error('AI Parse Error:', e.message);
         return [];
     }
-}
-
-function googleSearch(keyword) {
-    const key = process.env.GOOGLE_API_KEY;
-    const cx = process.env.GOOGLE_CX;
-    // Додаємо +shop або +buy для кращих результатів
-    const q = encodeURIComponent(`${keyword} australia shop`);
-    
-    return axios.get(`https://www.googleapis.com/customsearch/v1?key=${key}&cx=${cx}&q=${q}&num=8&gl=au`)
-        .then(res => (res.data.items || [])
-            .map(i => i.link)
-            .filter(l => !l.includes('facebook') && !l.includes('youtube') && !l.includes('pinterest')))
-        .catch(() => []);
 }
 
 function normalizeUrl(urlStr, baseUrl) {
@@ -361,6 +330,19 @@ function normalizeUrl(urlStr, baseUrl) {
         if (urlStr.startsWith('//')) return 'https:' + urlStr;
         return new URL(urlStr, baseUrl).href;
     } catch { return null; }
+}
+
+async function googleSearch(keyword) {
+    const key = process.env.GOOGLE_API_KEY;
+    const cx = process.env.GOOGLE_CX;
+    const q = encodeURIComponent(`${keyword} buy australia`);
+    // Беремо 10 сайтів
+    try {
+        const res = await axios.get(`https://www.googleapis.com/customsearch/v1?key=${key}&cx=${cx}&q=${q}&num=10&gl=au`);
+        return (res.data.items || [])
+            .map(i => i.link)
+            .filter(l => !l.includes('facebook') && !l.includes('youtube') && !l.includes('pinterest'));
+    } catch { return []; }
 }
 
 const PORT = process.env.PORT || 8080;
