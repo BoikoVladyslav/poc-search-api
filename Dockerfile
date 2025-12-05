@@ -4,9 +4,9 @@ WORKDIR /usr/src/app
 
 COPY package*.json ./
 
-# Пропускаємо завантаження хрома, бо він вже є в образі
+
 ENV PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true
-RUN npm ci
+RUN npm install
 
 COPY . .
 
