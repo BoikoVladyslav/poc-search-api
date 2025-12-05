@@ -2,6 +2,7 @@ require('dotenv').config();
 const express = require('express');
 const axios = require('axios');
 const cors = require('cors');
+const puppeteer = require('puppeteer-core');
 
 const app = express();
 app.use(cors());
@@ -14,7 +15,6 @@ if (process.env.OPENAI_API_KEY) {
     const OpenAI = require('openai');
     openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 }
-
 
 console.log(`\n🤖 AI Provider: ${AI_PROVIDER.toUpperCase()}\n`);
 
@@ -49,147 +49,82 @@ app.get('/', (req, res) => {
         .product:hover { transform: translateY(-4px); }
         .product img { width: 100%; height: 180px; object-fit: cover; background: #f0f0f0; }
         .product-info { padding: 15px; }
-        .product-title { font-size: 14px; color: #333; margin-bottom: 8px; line-height: 1.4; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+        .product-title { font-size: 14px; color: #333; margin-bottom: 8px; line-height: 1.4; }
         .product-price { font-size: 18px; font-weight: bold; color: #28a745; }
         .product-price.no-price { color: #999; font-size: 14px; }
         .product-link { display: block; margin-top: 10px; color: #007bff; text-decoration: none; font-size: 14px; }
-        .product-link:hover { text-decoration: underline; }
-        .error { background: #ffe6e6; color: #cc0000; padding: 10px; border-radius: 8px; margin-bottom: 15px; }
-        .processing { color: #666; font-style: italic; }
     </style>
 </head>
 <body>
     <div class="container">
         <h1>🔍 Product Search API</h1>
         <p class="subtitle">Search Australian e-commerce sites in real-time</p>
-        
         <div class="search-box">
             <input type="text" id="keyword" placeholder="Enter product keyword (e.g., bumper stickers)" />
             <button onclick="search()" id="searchBtn">Search</button>
         </div>
-        
         <div id="status" class="status" style="display:none;"></div>
-        <div id="error" class="error" style="display:none;"></div>
-        
         <div class="stats" id="stats" style="display:none;">
-            <div class="stat">
-                <div class="stat-value" id="productCount">0</div>
-                <div class="stat-label">Products Found</div>
-            </div>
-            <div class="stat">
-                <div class="stat-value" id="siteCount">0/0</div>
-                <div class="stat-label">Sites Processed</div>
-            </div>
+            <div class="stat"><div class="stat-value" id="productCount">0</div><div class="stat-label">Products Found</div></div>
+            <div class="stat"><div class="stat-value" id="siteCount">0/0</div><div class="stat-label">Sites Processed</div></div>
         </div>
-        
         <div class="products" id="products"></div>
     </div>
-
     <script>
         async function search() {
             const keyword = document.getElementById('keyword').value.trim();
             if (!keyword) { alert('Please enter a keyword'); return; }
-            
             const btn = document.getElementById('searchBtn');
             const status = document.getElementById('status');
-            const error = document.getElementById('error');
             const stats = document.getElementById('stats');
             const products = document.getElementById('products');
-            
             btn.disabled = true;
             btn.textContent = 'Searching...';
             status.style.display = 'block';
-            error.style.display = 'none';
             stats.style.display = 'flex';
             products.innerHTML = '';
             document.getElementById('productCount').textContent = '0';
             document.getElementById('siteCount').textContent = '0/0';
-            
             try {
                 const response = await fetch('/api/search', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ keyword })
                 });
-                
                 const reader = response.body.getReader();
                 const decoder = new TextDecoder();
-                
                 while (true) {
                     const { done, value } = await reader.read();
                     if (done) break;
-                    
-                    const text = decoder.decode(value);
-                    const lines = text.split('\\n');
-                    
+                    const lines = decoder.decode(value).split('\\n');
                     for (const line of lines) {
                         if (line.startsWith('data: ')) {
-                            try {
-                                const data = JSON.parse(line.slice(6));
-                                handleEvent(data);
-                            } catch (e) {}
+                            try { handleEvent(JSON.parse(line.slice(6))); } catch (e) {}
                         }
                     }
                 }
-            } catch (e) {
-                error.textContent = 'Error: ' + e.message;
-                error.style.display = 'block';
-            }
-            
+            } catch (e) { status.textContent = 'Error: ' + e.message; }
             btn.disabled = false;
             btn.textContent = 'Search';
-            status.style.display = 'none';
         }
-        
         function handleEvent(data) {
             const status = document.getElementById('status');
             const products = document.getElementById('products');
-            
-            switch (data.type) {
-                case 'status':
-                    status.textContent = data.message;
-                    break;
-                    
-                case 'processing':
-                    status.innerHTML = '<span class="processing">Processing: ' + data.site + '</span>';
-                    document.getElementById('siteCount').textContent = data.siteIndex + '/' + data.totalSites;
-                    break;
-                    
-                case 'products':
-                    document.getElementById('productCount').textContent = data.totalSoFar;
-                    data.newProducts.forEach(p => {
-                        products.innerHTML += createProductCard(p);
-                    });
-                    break;
-                    
-                case 'complete':
-                    status.textContent = 'Search complete! Found ' + data.totalProducts + ' products.';
-                    break;
-                    
-                case 'error':
-                    console.log('Site error:', data.site, data.error);
-                    break;
+            if (data.type === 'status') status.textContent = data.message;
+            if (data.type === 'processing') {
+                status.textContent = 'Processing: ' + data.site;
+                document.getElementById('siteCount').textContent = data.siteIndex + '/' + data.totalSites;
             }
+            if (data.type === 'products') {
+                document.getElementById('productCount').textContent = data.totalSoFar;
+                data.newProducts.forEach(p => {
+                    const price = p.price ? '$' + p.price.toFixed(2) + ' AUD' : 'Price on request';
+                    products.innerHTML += '<div class="product"><img src="' + p.imageUrl + '" onerror="this.style.display=\\'none\\'"><div class="product-info"><div class="product-title">' + p.title + '</div><div class="product-price">' + price + '</div><a href="' + p.productUrl + '" target="_blank" class="product-link">View Product →</a></div></div>';
+                });
+            }
+            if (data.type === 'complete') status.textContent = 'Found ' + data.totalProducts + ' products!';
         }
-        
-        function createProductCard(p) {
-            const price = p.price ? '$' + p.price.toFixed(2) + ' AUD' : 'Price on request';
-            const priceClass = p.price ? 'product-price' : 'product-price no-price';
-            return \`
-                <div class="product">
-                    <img src="\${p.imageUrl}" onerror="this.src='https://via.placeholder.com/300x180?text=No+Image'" alt="\${p.title}">
-                    <div class="product-info">
-                        <div class="product-title">\${p.title}</div>
-                        <div class="\${priceClass}">\${price}</div>
-                        <a href="\${p.productUrl}" target="_blank" class="product-link">View Product →</a>
-                    </div>
-                </div>
-            \`;
-        }
-        
-        document.getElementById('keyword').addEventListener('keypress', (e) => {
-            if (e.key === 'Enter') search();
-        });
+        document.getElementById('keyword').addEventListener('keypress', e => { if (e.key === 'Enter') search(); });
     </script>
 </body>
 </html>
@@ -199,10 +134,7 @@ app.get('/', (req, res) => {
 // ============ STREAMING SEARCH ============
 app.post('/api/search', async (req, res) => {
     const { keyword } = req.body;
-
-    if (!keyword) {
-        return res.status(400).json({ error: 'Keyword is required' });
-    }
+    if (!keyword) return res.status(400).json({ error: 'Keyword is required' });
 
     res.setHeader('Content-Type', 'text/event-stream');
     res.setHeader('Cache-Control', 'no-cache');
@@ -211,6 +143,8 @@ app.post('/api/search', async (req, res) => {
     const sendEvent = (type, data) => {
         res.write(`data: ${JSON.stringify({ type, ...data })}\n\n`);
     };
+
+    let browser = null;
 
     try {
         console.log(`\n🔍 Searching for: "${keyword}"`);
@@ -225,18 +159,42 @@ app.post('/api/search', async (req, res) => {
             return res.end();
         }
 
+        // Запускаємо один браузер для всього запиту
+        const isWindows = process.platform === 'win32';
+        browser = await puppeteer.launch({
+            headless: 'new',
+            executablePath: isWindows 
+                ? 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe'
+                : '/usr/bin/google-chrome-stable',
+            args: [
+                '--no-sandbox',
+                '--disable-setuid-sandbox',
+                '--disable-dev-shm-usage',
+                '--disable-gpu',
+                '--single-process',
+                '--no-zygote',
+                '--disable-extensions',
+                '--disable-background-networking',
+                '--disable-default-apps',
+                '--disable-sync',
+                '--disable-translate',
+                '--hide-scrollbars',
+                '--metrics-recording-only',
+                '--mute-audio',
+                '--no-first-run'
+            ]
+        });
+
         const allProducts = [];
         const seenTitles = new Set();
 
-       for (let i = 0; i < urls.length; i++) {
+        for (let i = 0; i < urls.length; i++) {
             const url = urls[i];
-            const siteIndex = i + 1;
-            
-            console.log(`\n📄 [${siteIndex}/${urls.length}] Processing: ${url}`);
-            sendEvent('processing', { site: url, siteIndex, totalSites: urls.length });
+            console.log(`\n📄 [${i + 1}/${urls.length}] Processing: ${url}`);
+            sendEvent('processing', { site: url, siteIndex: i + 1, totalSites: urls.length });
 
             try {
-                const html = await fetchPage(url);
+                const html = await fetchPage(browser, url);
                 const products = await parseHtmlWithAI(html, url, keyword);
 
                 const newProducts = [];
@@ -251,118 +209,88 @@ app.post('/api/search', async (req, res) => {
 
                 if (newProducts.length > 0) {
                     console.log(`   ✅ Found ${newProducts.length} new products`);
-                    sendEvent('products', {
-                        site: url,
-                        newProducts,
-                        totalSoFar: allProducts.length
-                    });
+                    sendEvent('products', { site: url, newProducts, totalSoFar: allProducts.length });
                 }
             } catch (error) {
                 console.log(`   ❌ Failed: ${error.message}`);
-                sendEvent('error', { site: url, error: error.message });
             }
         }
 
         console.log(`\n✨ Total products: ${allProducts.length}`);
-        sendEvent('complete', {
-            keyword,
-            totalProducts: allProducts.length,
-            products: allProducts
-        });
+        sendEvent('complete', { keyword, totalProducts: allProducts.length, products: allProducts });
 
     } catch (error) {
         console.error('Search error:', error.message);
         sendEvent('error', { error: error.message });
+    } finally {
+        if (browser) await browser.close().catch(() => {});
     }
 
     res.end();
 });
 
+// ============ FETCH PAGE ============
+async function fetchPage(browser, url) {
+    const page = await browser.newPage();
+    
+    try {
+        await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
+        
+        // Блокуємо важкі ресурси
+        await page.setRequestInterception(true);
+        page.on('request', req => {
+            if (['image', 'stylesheet', 'font', 'media'].includes(req.resourceType())) {
+                req.abort();
+            } else {
+                req.continue();
+            }
+        });
+
+        await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 15000 });
+        await new Promise(r => setTimeout(r, 2000));
+        
+        const html = await page.content();
+        console.log(`   📊 HTML: ${html.length} chars`);
+        
+        return html;
+    } finally {
+        await page.close();
+    }
+}
+
 // ============ GOOGLE SEARCH ============
 async function googleSearch(keyword) {
     const apiKey = process.env.GOOGLE_API_KEY;
     const cx = process.env.GOOGLE_CX;
-
-    if (!apiKey || !cx) {
-        throw new Error('Google API credentials not configured');
-    }
+    if (!apiKey || !cx) throw new Error('Google API not configured');
 
     const url = `https://www.googleapis.com/customsearch/v1?key=${apiKey}&cx=${cx}&q=${encodeURIComponent(keyword)}&num=10&gl=au&cr=countryAU`;
     const response = await axios.get(url);
-
     if (!response.data.items) return [];
 
-    const blockedDomains = [
-        'reddit.com', 'wikipedia.org', 'youtube.com', 'facebook.com',
-        'twitter.com', 'instagram.com', 'pinterest.com', 'quora.com',
-        'medium.com', 'linkedin.com', 'tiktok.com'
-    ];
-
-    const urls = response.data.items
+    const blocked = ['reddit.com', 'wikipedia.org', 'youtube.com', 'facebook.com', 'twitter.com', 'pinterest.com'];
+    return response.data.items
         .map(item => item.link)
-        .filter(link => {
-            const domain = new URL(link).hostname.toLowerCase();
-            return !blockedDomains.some(blocked => domain.includes(blocked));
-        });
-
-    console.log(`   🚫 Filtered out ${response.data.items.length - urls.length} non-ecommerce sites`);
-    return urls;
-}
-
-// ============ FETCH PAGE (без Puppeteer) ============
-async function fetchPage(url) {
-    try {
-        const response = await axios.get(url, {
-            timeout: 15000,
-            headers: {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-                'Accept-Language': 'en-US,en;q=0.9',
-                'Accept-Encoding': 'gzip, deflate, br',
-                'Connection': 'keep-alive',
-                'Upgrade-Insecure-Requests': '1'
-            },
-            maxRedirects: 5
-        });
-
-        console.log(`   📊 Status: ${response.status}, HTML: ${response.data.length} chars`);
-        return response.data;
-    } catch (error) {
-        console.log(`   ❌ Fetch failed: ${error.message}`);
-        throw error;
-    }
+        .filter(link => !blocked.some(b => link.includes(b)));
 }
 
 // ============ AI PARSING ============
 async function parseHtmlWithAI(html, url, keyword) {
-    const cleanedHtml = cleanHtml(html);
-    const truncatedHtml = cleanedHtml.substring(0, Math.min(70000, cleanedHtml.length));
+    const cleaned = html
+        .replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, '')
+        .replace(/<style\b[^<]*(?:(?!<\/style>)<[^<]*)*<\/style>/gi, '')
+        .replace(/\s+/g, ' ')
+        .substring(0, 70000);
 
-    console.log(`   📝 Sending ${truncatedHtml.length} chars to AI`);
+    console.log(`   📝 Sending ${cleaned.length} chars to AI`);
 
-    const prompt = `Extract products from this e-commerce page that are specifically "${keyword}".
-
-IMPORTANT: Only include products that ARE "${keyword}" or contain "${keyword}" in the name.
-DO NOT include other types of stickers, labels, or unrelated products.
-
-Extract for each matching product:
-- title: product name
-- price: number or null
-- currency: "AUD"
-- imageUrl: image URL
-- productUrl: product link
-
-Return JSON array (max 30 products):
-[{"title":"...","price":9.99,"currency":"AUD","imageUrl":"...","productUrl":"..."}]
-
-If no matching products found, return: []
-
-HTML:
-${truncatedHtml}`;
-
-    let responseText;
+    const prompt = `Extract products from this page matching "${keyword}".
+Return JSON array: [{"title":"...","price":9.99,"currency":"AUD","imageUrl":"...","productUrl":"..."}]
+Only include relevant products. Max 30. If none, return [].
+HTML: ${cleaned}`;
 
     try {
+        let responseText;
         if (AI_PROVIDER === 'openai') {
             const completion = await openai.chat.completions.create({
                 model: 'gpt-4o-mini',
@@ -370,115 +298,34 @@ ${truncatedHtml}`;
                 temperature: 0,
                 max_tokens: 4000
             });
-            responseText = completion.choices[0].message.content.trim();
+            responseText = completion.choices[0].message.content;
         } else {
-            responseText = await callGemini(prompt);
+            const resp = await axios.post(
+                `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${process.env.GEMINI_API_KEY}`,
+                { contents: [{ parts: [{ text: prompt }] }], generationConfig: { temperature: 0, maxOutputTokens: 8000 } }
+            );
+            responseText = resp.data.candidates[0].content.parts[0].text;
         }
-    } catch (error) {
-        console.log(`   ⚠️ AI error: ${error.message}`);
-        return [];
-    }
 
-    const products = parseAiResponse(responseText);
-    const baseUrl = new URL(url).origin;
-
-    return products
-        .map(product => {
-            let imageUrl = product.imageUrl;
-            let productUrl = product.productUrl;
-
-            if (imageUrl?.startsWith('//')) imageUrl = 'https:' + imageUrl;
-            else if (imageUrl && !imageUrl.startsWith('http')) imageUrl = baseUrl + (imageUrl.startsWith('/') ? '' : '/') + imageUrl;
-
-            if (productUrl?.startsWith('//')) productUrl = 'https:' + productUrl;
-            else if (productUrl && !productUrl.startsWith('http')) productUrl = baseUrl + (productUrl.startsWith('/') ? '' : '/') + productUrl;
-
-            return {
-                title: product.title,
-                price: product.price || null,
-                currency: product.currency || 'AUD',
-                imageUrl,
-                productUrl,
-                supplier: 'Supplier'
-            };
-        })
-        .filter(p => p.title && p.title.length > 3);
-}
-
-// ============ GEMINI ============
-async function callGemini(prompt) {
-    const apiKey = process.env.GEMINI_API_KEY;
-    if (!apiKey) throw new Error('Gemini API key not configured');
-
-    const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${apiKey}`;
-
-    const response = await axios.post(url, {
-        contents: [{ parts: [{ text: prompt }] }],
-        generationConfig: { temperature: 0, maxOutputTokens: 8000 }
-    });
-
-    return response.data.candidates[0].content.parts[0].text.trim();
-}
-
-// ============ CLEAN HTML ============
-function cleanHtml(html) {
-    return html
-        .replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, '')
-        .replace(/<style\b[^<]*(?:(?!<\/style>)<[^<]*)*<\/style>/gi, '')
-        .replace(/<noscript\b[^<]*(?:(?!<\/noscript>)<[^<]*)*<\/noscript>/gi, '')
-        .replace(/<!--[\s\S]*?-->/g, '')
-        .replace(/<svg\b[^<]*(?:(?!<\/svg>)<[^<]*)*<\/svg>/gi, '')
-        .replace(/\s+/g, ' ')
-        .trim();
-}
-
-// ============ PARSE RESPONSE ============
-function parseAiResponse(responseText) {
-    if (!responseText) return [];
-    
-    let cleaned = responseText
-        .replace(/```json\n?/gi, '')
-        .replace(/```\n?/gi, '')
-        .replace(/^\s*\n/gm, '')
-        .trim();
-
-    const startIdx = cleaned.indexOf('[');
-    const endIdx = cleaned.lastIndexOf(']');
-
-    if (startIdx === -1 || endIdx === -1 || endIdx <= startIdx) {
-        console.log(`   ⚠️ No JSON array found`);
-        return [];
-    }
-
-    cleaned = cleaned.substring(startIdx, endIdx + 1);
-
-    cleaned = cleaned
-        .replace(/,\s*]/g, ']')
-        .replace(/,\s*}/g, '}')
-        .replace(/'/g, '"')
-        .replace(/\n/g, ' ');
-
-    try {
-        const parsed = JSON.parse(cleaned);
-        return Array.isArray(parsed) ? parsed : [];
+        const match = responseText.match(/\[[\s\S]*\]/);
+        if (!match) return [];
+        
+        const products = JSON.parse(match[0]);
+        const baseUrl = new URL(url).origin;
+        
+        return products.map(p => ({
+            title: p.title,
+            price: p.price || null,
+            currency: 'AUD',
+            imageUrl: p.imageUrl?.startsWith('http') ? p.imageUrl : baseUrl + p.imageUrl,
+            productUrl: p.productUrl?.startsWith('http') ? p.productUrl : baseUrl + p.productUrl,
+            supplier: 'Supplier'
+        })).filter(p => p.title?.length > 3);
     } catch (e) {
-        console.log(`   ⚠️ JSON parse error`);
+        console.log(`   ⚠️ AI error: ${e.message}`);
         return [];
     }
 }
 
-
-// ============ START ============
 const PORT = process.env.PORT || 8080;
-app.listen(PORT, () => {
-    console.log(` Server: http://localhost:${PORT}`);
-    console.log(` AI Provider: ${AI_PROVIDER}`);
-    console.log(` Region: Australia\n`);
-});
-
-
-
-
-
-
-
+app.listen(PORT, () => console.log(`Server: http://localhost:${PORT}\nAI: ${AI_PROVIDER}\n`));
