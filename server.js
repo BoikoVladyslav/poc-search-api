@@ -13,9 +13,9 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-// Налаштування для Railway (щоб не вилетіло по пам'яті)
-const CONCURRENCY_LIMIT = 5; // Скільки сайтів сканувати одночасно
-
+// === НАЛАШТУВАННЯ ===
+const CONCURRENCY = 4; // Одночасно відкриваємо 4 вкладки (баланс швидкості і пам'яті)
+const PAGE_TIMEOUT = 20000; // Чекаємо сайт до 20 сек (не викидаємо швидко)
 const AI_PROVIDER = process.env.OPENAI_API_KEY ? 'openai' : 'gemini';
 
 let openai = null;
@@ -24,7 +24,7 @@ if (process.env.OPENAI_API_KEY) {
     openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 }
 
-console.log(`\n🚀 TURBO MODE ACTIVATED: ${AI_PROVIDER.toUpperCase()}\n`);
+console.log(`\n🏎️ PIPELINE MODE: ${AI_PROVIDER.toUpperCase()} | Threads: ${CONCURRENCY}\n`);
 
 // ============ HTML UI ============
 app.get('/', (req, res) => {
@@ -34,34 +34,46 @@ app.get('/', (req, res) => {
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>⚡ Turbo Product Search</title>
+    <title>⚡ Pipeline Search</title>
     <style>
-        body { font-family: system-ui, sans-serif; background: #f0f2f5; padding: 20px; max-width: 1200px; margin: 0 auto; }
-        .search-box { display: flex; gap: 10px; margin-bottom: 20px; background: white; padding: 15px; border-radius: 12px; box-shadow: 0 2px 5px rgba(0,0,0,0.05); }
-        input { flex: 1; padding: 12px; border: 1px solid #ddd; border-radius: 8px; font-size: 16px; }
-        button { padding: 12px 30px; background: #0066ff; color: white; border: none; border-radius: 8px; font-weight: bold; cursor: pointer; transition: 0.2s; }
-        button:hover { background: #0052cc; }
-        button:disabled { background: #ccc; }
-        #status { margin-bottom: 20px; color: #666; font-size: 14px; font-family: monospace; }
-        .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 20px; }
-        .card { background: white; border-radius: 12px; overflow: hidden; box-shadow: 0 2px 8px rgba(0,0,0,0.08); transition: transform 0.2s; display: flex; flex-direction: column; }
-        .card:hover { transform: translateY(-3px); }
-        .img-wrap { height: 180px; background: #f8f9fa; display: flex; align-items: center; justify-content: center; overflow: hidden; }
-        .card img { width: 100%; height: 100%; object-fit: contain; }
-        .info { padding: 12px; flex: 1; display: flex; flex-direction: column; }
-        .title { font-size: 14px; margin-bottom: 8px; line-height: 1.4; color: #333; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
-        .price { font-size: 18px; font-weight: 700; color: #00a651; margin-top: auto; }
-        .domain { font-size: 11px; color: #999; margin-top: 5px; }
-        .link { margin-top: 10px; text-decoration: none; color: white; background: #333; text-align: center; padding: 8px; border-radius: 6px; font-size: 13px; }
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; background: #f3f4f6; padding: 20px; max-width: 1200px; margin: 0 auto; }
+        .search-container { background: white; padding: 20px; border-radius: 12px; box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1); margin-bottom: 20px; }
+        .input-group { display: flex; gap: 10px; }
+        input { flex: 1; padding: 14px; border: 2px solid #e5e7eb; border-radius: 8px; font-size: 16px; outline: none; }
+        button { padding: 14px 32px; background: #2563eb; color: white; border: none; border-radius: 8px; font-weight: 600; cursor: pointer; }
+        button:disabled { background: #93c5fd; }
+        
+        .status-bar { display: flex; justify-content: space-between; margin-bottom: 10px; color: #4b5563; font-size: 14px; font-family: monospace; }
+        .progress-container { height: 6px; background: #e5e7eb; border-radius: 3px; overflow: hidden; margin-bottom: 20px; }
+        .progress-bar { height: 100%; background: #2563eb; width: 0%; transition: width 0.3s; }
+
+        .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 15px; }
+        .card { background: white; border-radius: 10px; overflow: hidden; box-shadow: 0 1px 3px rgba(0,0,0,0.1); display: flex; flex-direction: column; height: 100%; transition: transform 0.2s; }
+        .card:hover { transform: translateY(-3px); box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1); }
+        .img-wrap { height: 160px; padding: 10px; display: flex; align-items: center; justify-content: center; background: #fff; }
+        .card img { max-width: 100%; max-height: 100%; object-fit: contain; }
+        .info { padding: 12px; flex: 1; display: flex; flex-direction: column; border-top: 1px solid #f3f4f6; }
+        .site-name { font-size: 10px; text-transform: uppercase; color: #6b7280; font-weight: bold; margin-bottom: 4px; }
+        .title { font-size: 13px; margin-bottom: 8px; line-height: 1.4; color: #111827; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+        .price { font-size: 16px; font-weight: 700; color: #059669; margin-top: auto; }
+        .link { margin-top: 10px; text-align: center; background: #f9fafb; color: #374151; text-decoration: none; padding: 8px; border-radius: 6px; font-size: 12px; font-weight: 500; border: 1px solid #e5e7eb; }
+        .link:hover { background: #f3f4f6; }
     </style>
 </head>
 <body>
-    <h1>search api</h1>
-    <div class="search-box">
-        <input type="text" id="keyword" placeholder="Enter product name..." onkeypress="if(event.key==='Enter') run()">
-        <button onclick="run()" id="btn">Search</button>
+    <div class="search-container">
+        <h1>🚀 Pipeline Search</h1>
+        <div class="input-group">
+            <input type="text" id="keyword" placeholder="Enter product keyword..." onkeypress="if(event.key==='Enter') run()">
+            <button onclick="run()" id="btn">Search</button>
+        </div>
     </div>
-    <div id="status">Ready</div>
+    
+    <div class="status-bar">
+        <span id="status">Ready</span>
+        <span id="stats">0/0 sites</span>
+    </div>
+    <div class="progress-container"><div class="progress-bar" id="progress"></div></div>
     <div id="results" class="grid"></div>
 
     <script>
@@ -71,14 +83,16 @@ app.get('/', (req, res) => {
             
             const btn = document.getElementById('btn');
             const status = document.getElementById('status');
+            const stats = document.getElementById('stats');
+            const progress = document.getElementById('progress');
             const results = document.getElementById('results');
             
             btn.disabled = true;
-            btn.innerText = 'Searching...';
-            status.innerText = 'Initializing...';
             results.innerHTML = '';
+            progress.style.width = '2%';
+            status.textContent = 'Searching...';
             
-            let count = 0;
+            let totalProducts = 0;
             const startTime = Date.now();
 
             try {
@@ -103,39 +117,49 @@ app.get('/', (req, res) => {
                             try {
                                 const data = JSON.parse(line.slice(6));
                                 
-                                if(data.type === 'status') {
-                                    status.innerText = data.msg + \` (\${((Date.now()-startTime)/1000).toFixed(1)}s)\`;
+                                if(data.type === 'progress') {
+                                    status.textContent = data.msg;
+                                    if(data.done && data.total) {
+                                        const pct = Math.round((data.done / data.total) * 100);
+                                        progress.style.width = pct + '%';
+                                        stats.textContent = \`\${data.done}/\${data.total} sites\`;
+                                    }
                                 }
+                                
                                 if(data.type === 'product') {
-                                    count++;
+                                    totalProducts++;
                                     const p = data.p;
-                                    results.innerHTML += \`
+                                    const domain = new URL(p.productUrl).hostname.replace('www.','');
+                                    
+                                    // Prepend to show newest first or append? Let's append.
+                                    results.insertAdjacentHTML('beforeend', \`
                                         <div class="card">
                                             <div class="img-wrap">
-                                                <img src="\${p.imageUrl}" loading="lazy" onerror="this.style.display='none'">
+                                                <img src="\${p.imageUrl}" loading="lazy" onerror="this.src='https://placehold.co/200x200?text=No+Image'">
                                             </div>
                                             <div class="info">
+                                                <div class="site-name">\${domain}</div>
                                                 <div class="title" title="\${p.title}">\${p.title}</div>
                                                 <div class="price">\${p.price || '?'}</div>
-                                                <div class="domain">\${new URL(p.productUrl).hostname.replace('www.','')}</div>
-                                                <a href="\${p.productUrl}" target="_blank" class="link">View Product</a>
+                                                <a href="\${p.productUrl}" target="_blank" class="link">View →</a>
                                             </div>
                                         </div>
-                                    \`;
+                                    \`);
                                 }
+                                
                                 if(data.type === 'done') {
-                                    status.innerText = \`✅ Complete! Found \${count} products in \${((Date.now()-startTime)/1000).toFixed(1)}s\`;
+                                    const time = ((Date.now() - startTime) / 1000).toFixed(1);
+                                    status.textContent = \`✅ Done! Found \${totalProducts} products in \${time}s\`;
+                                    progress.style.width = '100%';
                                     btn.disabled = false;
-                                    btn.innerText = 'Search';
                                 }
                             } catch(e) {}
                         }
                     }
                 }
             } catch(e) {
-                status.innerText = 'Error: ' + e.message;
+                status.textContent = 'Error: ' + e.message;
                 btn.disabled = false;
-                btn.innerText = 'Search';
             }
         }
     </script>
@@ -156,9 +180,9 @@ app.post('/api/search', async (req, res) => {
 
     let browser = null;
     try {
-        send('status', { msg: `🔍 Google Search: "${keyword}"` });
+        send('progress', { msg: 'Google Search...', done: 0, total: 10 });
         
-        // 1. Паралельний старт: поки шукаємо в Google, вже гріємо браузер
+        // 1. Google Search + Browser Launch (Parallel)
         const [browserInstance, urls] = await Promise.all([
             puppeteer.launch({
                 headless: "new",
@@ -168,83 +192,104 @@ app.post('/api/search', async (req, res) => {
                     '--disable-dev-shm-usage',
                     '--disable-accelerated-2d-canvas',
                     '--disable-gpu',
-                    '--blink-settings=imagesEnabled=false' // ⚡ ВИМИКАЄМО КАРТИНКИ ГЛОБАЛЬНО
+                    '--blink-settings=imagesEnabled=false' // Тільки HTML, без картинок (для швидкості)
                 ]
             }),
             googleSearch(keyword)
         ]);
 
         browser = browserInstance;
-        
+
         if (urls.length === 0) {
             send('done', { total: 0 });
             return res.end();
         }
 
-        send('status', { msg: `🚀 Scanning ${urls.length} sites in parallel...` });
+        const totalUrls = Math.min(urls.length, 10); // Беремо топ 10
+        const targetUrls = urls.slice(0, totalUrls);
+        
+        send('progress', { msg: `Scanning ${totalUrls} sites...`, done: 0, total: totalUrls });
 
-        // 2. Обробка чергами (Concurrency Limit)
-        // Railway Starter має мало RAM, тому запускаємо по 5 сайтів одночасно
-        const processBatch = async (batchUrls) => {
-            const promises = batchUrls.map(url => processSingleUrl(browser, url, keyword, send));
-            await Promise.all(promises); // Чекаємо поки вся пачка завершиться
+        // 2. ЗАПУСК ЧЕРГИ (CONCURRENCY QUEUE)
+        // Це головна магія: ми тримаємо рівно 4 вкладки відкритими.
+        // Як тільки одна закінчує - беремо наступний сайт.
+        
+        let completedCount = 0;
+        
+        // Функція-воркер, яка бере задачі з масиву
+        const processNext = async () => {
+            while (targetUrls.length > 0) {
+                const url = targetUrls.shift(); // Беремо наступний URL
+                
+                try {
+                    // Обробка сайту
+                    await processSite(browser, url, keyword, send);
+                } catch (e) {
+                    console.error(`Error ${url}:`, e.message);
+                } finally {
+                    completedCount++;
+                    send('progress', { 
+                        msg: `Processed ${completedCount}/${totalUrls}`, 
+                        done: completedCount, 
+                        total: totalUrls 
+                    });
+                }
+            }
         };
 
-        // Розбиваємо на пачки
-        for (let i = 0; i < urls.length; i += CONCURRENCY_LIMIT) {
-            const batch = urls.slice(i, i + CONCURRENCY_LIMIT);
-            send('status', { msg: `⚡ Processing batch ${Math.ceil((i+1)/5)}...` });
-            await processBatch(batch);
-        }
+        // Створюємо N воркерів
+        const workers = Array(CONCURRENCY).fill(null).map(() => processNext());
+        
+        // Чекаємо поки всі воркери закінчать роботу
+        await Promise.all(workers);
 
-        send('done', { total: 'N/A' });
+        send('done', {});
 
     } catch (e) {
         console.error(e);
-        send('status', { msg: 'Error: ' + e.message });
+        send('progress', { msg: 'Error: ' + e.message });
     } finally {
         if (browser) await browser.close().catch(() => {});
         res.end();
     }
 });
 
-// ============ SINGLE URL PROCESSOR ============
-async function processSingleUrl(browser, url, keyword, send) {
+// ============ ОБРОБКА ОДНОГО САЙТУ ============
+async function processSite(browser, url, keyword, send) {
     let page = null;
     try {
         page = await browser.newPage();
         
-        // Блокування ресурсів (Super Aggressive)
+        // Блокуємо важкі ресурси, але залишаємо скрипти (деякі сайти без них не рендерять товари)
         await page.setRequestInterception(true);
         page.on('request', req => {
             const type = req.resourceType();
-            // Блокуємо все крім Document (HTML) і XHR (Fetch)
-            if (['image', 'stylesheet', 'font', 'media', 'other'].includes(type)) {
-                req.abort(); 
-            } else {
-                req.continue();
-            }
+            if (['image', 'font', 'media', 'stylesheet'].includes(type)) req.abort();
+            else req.continue();
         });
 
         const ua = new UserAgent({ deviceCategory: 'desktop' });
         await page.setUserAgent(ua.toString());
 
-        // Timeout 15s на все про все
-        await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 15000 });
+        // Timeout 20s - це дасть шанс повільним сайтам
+        await page.goto(url, { waitUntil: 'domcontentloaded', timeout: PAGE_TIMEOUT });
 
-        // ⚡ TURBO SCROLL (Всього 1 секунда!)
-        // Нам не треба все, нам треба ПЕРШІ товари швидко
+        // Швидкий, але ефективний скрол
         await page.evaluate(async () => {
+            // Скролимо 2 рази з паузою, щоб підвантажити Lazy Load
             window.scrollBy(0, 1000);
-            await new Promise(r => setTimeout(r, 500));
-            window.scrollBy(0, 1000);
-            await new Promise(r => setTimeout(r, 500));
+            await new Promise(r => setTimeout(r, 200)); 
+            window.scrollBy(0, 1500);
+            await new Promise(r => setTimeout(r, 300));
         });
 
         const html = await page.content();
-        await page.close(); // Закриваємо сторінку одразу, звільняємо пам'ять
+        
+        // Закриваємо сторінку ДО AI, щоб звільнити пам'ять для іншої вкладки
+        await page.close();
+        page = null;
 
-        // Парсинг AI (Паралельно з іншими сайтами)
+        // Парсинг AI
         const products = await parseWithAI(html, url, keyword);
         
         if (products.length > 0) {
@@ -253,36 +298,48 @@ async function processSingleUrl(browser, url, keyword, send) {
 
     } catch (e) {
         if(page) await page.close().catch(() => {});
-        // Не кидаємо помилку, щоб не зупинити інші потоки
-        // console.log(`Skipped ${url}: ${e.message}`);
+        // Не викидаємо помилку наверх, щоб воркер продовжив з наступним сайтом
     }
 }
 
-// ============ AI PARSER (Fast & Light) ============
+// ============ AI PARSER ============
 async function parseWithAI(html, url, keyword) {
     const $ = cheerio.load(html);
 
-    // Видаляємо все зайве
-    $('script, style, noscript, svg, iframe, header, footer, nav, .menu, .sidebar, .popup').remove();
+    // Видаляємо сміття
+    $('script, style, noscript, svg, iframe, header, footer, nav, .menu, .sidebar, .popup, .cookie').remove();
     
-    // Отримуємо тільки src картинок (навіть якщо вони не завантажились браузером, лінка в коді є)
+    // Lazy Load Fix: шукаємо data-src і ставимо в src
     $('img').each((i, el) => {
         const $el = $(el);
-        const realSrc = $el.attr('data-src') || $el.attr('lazy-src') || $el.attr('src');
-        if (realSrc) $el.attr('src', realSrc);
+        const realSrc = $el.attr('data-src') || $el.attr('lazy-src') || $el.attr('data-srcset');
+        if (realSrc) {
+            // Якщо це srcset (url 1x, url 2x), беремо перший
+            $el.attr('src', realSrc.split(' ')[0]);
+        }
     });
 
-    // Максимально стискаємо HTML
-    let body = $('body').html() || '';
-    body = body.replace(/\s+/g, ' ').substring(0, 35000); // 35k символів достатньо для перших 20 товарів
+    // Очищаємо HTML від атрибутів крім src/href (стиснення)
+    $('*').each((i, el) => {
+        if(el.type === 'tag') {
+            const attribs = el.attribs || {};
+            const newAttribs = {};
+            if(attribs.src) newAttribs.src = attribs.src;
+            if(attribs.href) newAttribs.href = attribs.href;
+            el.attribs = newAttribs;
+        }
+    });
 
-    // Короткий промпт для швидкості
+    let cleanHtml = $('body').html() || '';
+    // Відправляємо не більше 40к символів (цього достатньо для ~20-30 товарів)
+    const truncated = cleanHtml.replace(/\s+/g, ' ').substring(0, 40000);
+
     const prompt = `
-    Extract products from HTML for keyword "${keyword}".
+    Find products for "${keyword}" in HTML.
     Site: ${new URL(url).hostname}.
-    Ignore related items.
-    JSON Output: [{"title":"...","price":"...","imageUrl":"...","productUrl":"..."}]
-    HTML: ${body}
+    Ignore Nav/Footer/Related.
+    Format JSON: [{"title":"...","price":"...","imageUrl":"...","productUrl":"..."}]
+    HTML: ${truncated}
     `;
 
     try {
@@ -292,7 +349,7 @@ async function parseWithAI(html, url, keyword) {
                 model: 'gpt-4o-mini',
                 messages: [{ role: 'user', content: prompt }],
                 temperature: 0,
-                max_tokens: 2000 // Менше токенів = швидше відповідь
+                max_tokens: 3000
             });
             content = completion.choices[0].message.content;
         } else {
@@ -336,15 +393,13 @@ async function googleSearch(keyword) {
     const key = process.env.GOOGLE_API_KEY;
     const cx = process.env.GOOGLE_CX;
     const q = encodeURIComponent(`${keyword} buy australia`);
-    // Беремо 10 сайтів
     try {
         const res = await axios.get(`https://www.googleapis.com/customsearch/v1?key=${key}&cx=${cx}&q=${q}&num=10&gl=au`);
         return (res.data.items || [])
             .map(i => i.link)
-            .filter(l => !l.includes('facebook') && !l.includes('youtube') && !l.includes('pinterest'));
+            .filter(l => !l.includes('facebook') && !l.includes('youtube') && !l.includes('instagram'));
     } catch { return []; }
 }
 
 const PORT = process.env.PORT || 8080;
 app.listen(PORT, () => console.log(`Listening on ${PORT}`));
-
