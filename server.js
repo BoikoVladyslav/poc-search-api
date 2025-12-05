@@ -16,7 +16,6 @@ if (process.env.OPENAI_API_KEY) {
     openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 }
 
-let browser = null;
 
 console.log(`\n🤖 AI Provider: ${AI_PROVIDER.toUpperCase()}\n`);
 
@@ -325,30 +324,29 @@ async function googleSearch(keyword) {
 
 // ============ FETCH WITH PUPPETEER ============
 async function fetchWithPuppeteer(url) {
-    if (!browser) {
-        const isWindows = process.platform === 'win32';
-        const defaultPath = isWindows 
-            ? 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe'
-            : '/usr/bin/google-chrome-stable';
-        
-        const args = [
-            '--no-sandbox',
-            '--disable-setuid-sandbox',
-            '--disable-dev-shm-usage',
-            '--disable-gpu',
-            '--disable-blink-features=AutomationControlled'
-        ];
-        
-        if (!isWindows) args.push('--single-process');
-        
-        browser = await puppeteer.launch({
-            headless: 'new',
-            executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || defaultPath,
-            args
-        });
-    }
+    const isWindows = process.platform === 'win32';
+    const defaultPath = isWindows 
+        ? 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe'
+        : '/usr/bin/google-chrome-stable';
+    
+    const args = [
+        '--no-sandbox',
+        '--disable-setuid-sandbox',
+        '--disable-dev-shm-usage',
+        '--disable-gpu',
+        '--disable-blink-features=AutomationControlled',
+        '--single-process',
+        '--no-zygote'
+    ];
 
-    const page = await browser.newPage();
+    // Створюємо новий браузер для кожного запиту (стабільніше на Railway)
+    const browserInstance = await puppeteer.launch({
+        headless: 'new',
+        executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || defaultPath,
+        args
+    });
+
+    const page = await browserInstance.newPage();
 
     try {
         await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
@@ -359,10 +357,10 @@ async function fetchWithPuppeteer(url) {
 
         const response = await page.goto(url, {
             waitUntil: 'domcontentloaded',
-            timeout: 12000
+            timeout: 15000
         });
 
-        await new Promise(resolve => setTimeout(resolve, 1000));
+        await new Promise(resolve => setTimeout(resolve, 1500));
         
         await page.evaluate(() => {
             window.scrollTo(0, 3000);
@@ -376,6 +374,7 @@ async function fetchWithPuppeteer(url) {
         return html;
     } finally {
         await page.close();
+        await browserInstance.close();
     }
 }
 
@@ -510,11 +509,6 @@ function parseAiResponse(responseText) {
     }
 }
 
-// ============ CLEANUP ============
-process.on('SIGINT', async () => {
-    if (browser) await browser.close();
-    process.exit();
-});
 
 // ============ START ============
 const PORT = process.env.PORT || 8080;
@@ -523,4 +517,5 @@ app.listen(PORT, () => {
     console.log(` AI Provider: ${AI_PROVIDER}`);
     console.log(` Region: Australia\n`);
 });
+
 
