@@ -2,7 +2,6 @@ require('dotenv').config();
 const express = require('express');
 const axios = require('axios');
 const cors = require('cors');
-// Використовуємо stealth плагін для обходу захисту
 const puppeteer = require('puppeteer-extra');
 const StealthPlugin = require('puppeteer-extra-plugin-stealth');
 const cheerio = require('cheerio');
@@ -24,7 +23,7 @@ if (process.env.OPENAI_API_KEY) {
 
 console.log(`\n🤖 AI Provider: ${AI_PROVIDER.toUpperCase()}\n`);
 
-// ============ HTML INTERFACE (Залишив без змін) ============
+// ============ HTML INTERFACE ============
 app.get('/', (req, res) => {
     res.send(`
 <!DOCTYPE html>
@@ -32,64 +31,49 @@ app.get('/', (req, res) => {
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Product Search API - Australia (Fix)</title>
+    <title>Product Search API - Australia (Final Fix)</title>
     <style>
         * { box-sizing: border-box; margin: 0; padding: 0; }
         body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #f5f5f5; padding: 20px; }
         .container { max-width: 1200px; margin: 0 auto; }
         h1 { color: #333; margin-bottom: 10px; }
-        .subtitle { color: #666; margin-bottom: 20px; }
         .search-box { display: flex; gap: 10px; margin-bottom: 20px; }
         input { flex: 1; padding: 12px 16px; font-size: 16px; border: 2px solid #ddd; border-radius: 8px; }
-        input:focus { outline: none; border-color: #007bff; }
         button { padding: 12px 24px; font-size: 16px; background: #007bff; color: white; border: none; border-radius: 8px; cursor: pointer; }
         button:hover { background: #0056b3; }
         button:disabled { background: #ccc; cursor: not-allowed; }
         .status { padding: 10px; background: #e8f4fd; border-radius: 8px; margin-bottom: 15px; color: #0066cc; }
-        .stats { display: flex; gap: 20px; margin-bottom: 20px; }
-        .stat { background: white; padding: 15px 20px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
-        .stat-value { font-size: 24px; font-weight: bold; color: #007bff; }
-        .stat-label { color: #666; font-size: 14px; }
-        .products { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 20px; }
-        .product { background: white; border-radius: 12px; overflow: hidden; box-shadow: 0 2px 8px rgba(0,0,0,0.1); transition: transform 0.2s; }
-        .product:hover { transform: translateY(-4px); }
-        .product img { width: 100%; height: 180px; object-fit: cover; background: #f0f0f0; }
+        .products { display: grid; grid-template-columns: repeat(auto-fill, minmax(250px, 1fr)); gap: 20px; }
+        .product { background: white; border-radius: 12px; overflow: hidden; box-shadow: 0 2px 8px rgba(0,0,0,0.1); }
+        .product img { width: 100%; height: 200px; object-fit: contain; background: #fff; padding: 10px; }
         .product-info { padding: 15px; }
-        .product-title { font-size: 14px; color: #333; margin-bottom: 8px; line-height: 1.4; }
+        .product-title { font-size: 14px; color: #333; margin-bottom: 8px; font-weight: 500; height: 40px; overflow: hidden; }
         .product-price { font-size: 18px; font-weight: bold; color: #28a745; }
         .product-link { display: block; margin-top: 10px; color: #007bff; text-decoration: none; font-size: 14px; }
     </style>
 </head>
 <body>
     <div class="container">
-        <h1>🔍 Product Search API (Stealth Mode)</h1>
-        <p class="subtitle">Search Australian e-commerce sites in real-time</p>
+        <h1>🔍 Product Search API</h1>
         <div class="search-box">
-            <input type="text" id="keyword" placeholder="Enter product keyword (e.g., bumper stickers)" />
+            <input type="text" id="keyword" placeholder="Enter product keyword..." />
             <button onclick="search()" id="searchBtn">Search</button>
         </div>
         <div id="status" class="status" style="display:none;"></div>
-        <div class="stats" id="stats" style="display:none;">
-            <div class="stat"><div class="stat-value" id="productCount">0</div><div class="stat-label">Products Found</div></div>
-            <div class="stat"><div class="stat-value" id="siteCount">0/0</div><div class="stat-label">Sites Processed</div></div>
-        </div>
         <div class="products" id="products"></div>
     </div>
     <script>
         async function search() {
             const keyword = document.getElementById('keyword').value.trim();
-            if (!keyword) { alert('Please enter a keyword'); return; }
+            if (!keyword) return;
             const btn = document.getElementById('searchBtn');
             const status = document.getElementById('status');
-            const stats = document.getElementById('stats');
             const products = document.getElementById('products');
+            
             btn.disabled = true;
-            btn.textContent = 'Searching...';
             status.style.display = 'block';
-            stats.style.display = 'flex';
             products.innerHTML = '';
-            document.getElementById('productCount').textContent = '0';
-            document.getElementById('siteCount').textContent = '0/0';
+            
             try {
                 const response = await fetch('/api/search', {
                     method: 'POST',
@@ -104,32 +88,24 @@ app.get('/', (req, res) => {
                     const lines = decoder.decode(value).split('\\n');
                     for (const line of lines) {
                         if (line.startsWith('data: ')) {
-                            try { handleEvent(JSON.parse(line.slice(6))); } catch (e) {}
+                            try { 
+                                const data = JSON.parse(line.slice(6));
+                                if (data.type === 'status' || data.type === 'processing') status.textContent = data.message || ('Processing: ' + data.site);
+                                if (data.type === 'products') {
+                                    data.newProducts.forEach(p => {
+                                        products.innerHTML += '<div class="product"><img src="' + p.imageUrl + '"><div class="product-info"><div class="product-title">' + p.title + '</div><div class="product-price">' + (p.price || 'N/A') + '</div><a href="' + p.productUrl + '" target="_blank" class="product-link">View →</a></div></div>';
+                                    });
+                                }
+                                if (data.type === 'complete') {
+                                    status.textContent = 'Found ' + data.totalProducts + ' products!';
+                                    btn.disabled = false;
+                                }
+                            } catch (e) {}
                         }
                     }
                 }
-            } catch (e) { status.textContent = 'Error: ' + e.message; }
-            btn.disabled = false;
-            btn.textContent = 'Search';
+            } catch (e) { status.textContent = 'Error: ' + e.message; btn.disabled = false; }
         }
-        function handleEvent(data) {
-            const status = document.getElementById('status');
-            const products = document.getElementById('products');
-            if (data.type === 'status') status.textContent = data.message;
-            if (data.type === 'processing') {
-                status.textContent = 'Processing: ' + data.site;
-                document.getElementById('siteCount').textContent = data.siteIndex + '/' + data.totalSites;
-            }
-            if (data.type === 'products') {
-                document.getElementById('productCount').textContent = data.totalSoFar;
-                data.newProducts.forEach(p => {
-                    const price = p.price ? '$' + p.price + ' AUD' : 'Check Site';
-                    products.innerHTML += '<div class="product"><img src="' + p.imageUrl + '" onerror="this.style.display=\\'none\\'"><div class="product-info"><div class="product-title">' + p.title + '</div><div class="product-price">' + price + '</div><a href="' + p.productUrl + '" target="_blank" class="product-link">View Product →</a></div></div>';
-                });
-            }
-            if (data.type === 'complete') status.textContent = 'Found ' + data.totalProducts + ' products!';
-        }
-        document.getElementById('keyword').addEventListener('keypress', e => { if (e.key === 'Enter') search(); });
     </script>
 </body>
 </html>
@@ -145,139 +121,110 @@ app.post('/api/search', async (req, res) => {
     res.setHeader('Cache-Control', 'no-cache');
     res.setHeader('Connection', 'keep-alive');
 
-    const sendEvent = (type, data) => {
-        res.write(`data: ${JSON.stringify({ type, ...data })}\n\n`);
-    };
+    const sendEvent = (type, data) => res.write(`data: ${JSON.stringify({ type, ...data })}\n\n`);
 
     let browser = null;
 
     try {
         console.log(`\n🔍 Searching for: "${keyword}"`);
-        sendEvent('status', { message: `Searching for "${keyword}"...` });
+        sendEvent('status', { message: `Searching Google for "${keyword}"...` });
 
         const urls = await googleSearch(keyword);
-        console.log(`📋 Found ${urls.length} URLs`);
-        sendEvent('status', { message: `Found ${urls.length} sites to scan` });
+        sendEvent('status', { message: `Found ${urls.length} sites. Starting scan...` });
 
-        if (urls.length === 0) {
-            sendEvent('complete', { totalProducts: 0, products: [] });
-            return res.end();
-        }
-
-        // ЗАПУСК БРАУЗЕРА: Оптимізовано для Railway
+        // ЗАПУСК: Використовуємо 'new' headless
         browser = await puppeteer.launch({
-            // headless: 'new', // Старий синтаксис
-            headless: true,
-            args: [
-                '--no-sandbox',
-                '--disable-setuid-sandbox',
-                '--disable-dev-shm-usage', // Важливо для Docker/Railway
-                '--disable-accelerated-2d-canvas',
-                '--disable-gpu',
-                '--window-size=1920,1080'
-            ],
-            // Не вказуємо executablePath вручну, нехай puppeteer знайде встановлений або скачаний chrome
+            headless: "new",
+            args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-accelerated-2d-canvas', '--disable-gpu', '--window-size=1366,768']
         });
 
         const allProducts = [];
-        const seenTitles = new Set();
+        const seenUrls = new Set(); // Щоб уникнути дублів
 
-        // Ліміт на 5 сайтів для швидкості (можна змінити)
-        const sitesToScan = urls.slice(0, 8); 
+        // Скануємо перші 6 сайтів (зменшили з 8 для швидкості)
+        const sitesToScan = urls.slice(0, 6);
 
         for (let i = 0; i < sitesToScan.length; i++) {
             const url = sitesToScan[i];
-            console.log(`\n📄 [${i + 1}/${sitesToScan.length}] Processing: ${url}`);
+            console.log(`\n📄 [${i + 1}/${sitesToScan.length}] Scanning: ${url}`);
             sendEvent('processing', { site: url, siteIndex: i + 1, totalSites: sitesToScan.length });
 
             try {
                 const html = await fetchPage(browser, url);
-                if (!html) throw new Error("Empty HTML");
+                if (!html) continue;
 
                 const products = await parseHtmlWithAI(html, url, keyword);
 
                 const newProducts = [];
-                for (const product of products) {
-                    // Більш жорстка фільтрація дублів
-                    const normalizedTitle = product.title.toLowerCase().replace(/[^a-z0-9]/g, '');
-                    if (normalizedTitle.length > 5 && !seenTitles.has(normalizedTitle)) {
-                        seenTitles.add(normalizedTitle);
-                        allProducts.push(product);
-                        newProducts.push(product);
+                for (const p of products) {
+                    // Фільтрація: має бути ціна або картинка, і унікальний URL
+                    if (p.title && !seenUrls.has(p.productUrl)) {
+                        seenUrls.add(p.productUrl);
+                        allProducts.push(p);
+                        newProducts.push(p);
                     }
                 }
 
                 if (newProducts.length > 0) {
-                    console.log(`   ✅ Found ${newProducts.length} new products`);
+                    console.log(`   ✅ Found ${newProducts.length} items`);
                     sendEvent('products', { site: url, newProducts, totalSoFar: allProducts.length });
                 } else {
-                    console.log(`   ⚠️ No new products found on this site`);
+                    console.log(`   ⚠️ No valid products found`);
                 }
             } catch (error) {
                 console.log(`   ❌ Error: ${error.message}`);
             }
         }
 
-        console.log(`\n✨ Total products: ${allProducts.length}`);
-        sendEvent('complete', { keyword, totalProducts: allProducts.length, products: allProducts });
+        sendEvent('complete', { keyword, totalProducts: allProducts.length });
 
     } catch (error) {
-        console.error('Search error:', error.message);
+        console.error('Fatal error:', error);
         sendEvent('error', { error: error.message });
     } finally {
         if (browser) await browser.close().catch(() => {});
+        res.end();
     }
-
-    res.end();
 });
 
-// ============ FETCH PAGE (OPTIMIZED) ============
+// ============ FETCH PAGE (Виправлено) ============
 async function fetchPage(browser, url) {
     const page = await browser.newPage();
-    
     try {
-        // Динамічний User-Agent для кожного запиту
         const userAgent = new UserAgent({ deviceCategory: 'desktop' });
         await page.setUserAgent(userAgent.toString());
-        
-        await page.setViewport({ width: 1920, height: 1080 });
+        await page.setViewport({ width: 1366, height: 768 });
 
-        // Блокуємо важкі ресурси для швидкості та економії трафіку
+        // Блокуємо тільки шрифти та медіа, КАРТИНКИ залишаємо (потрібно для аналізу src)
         await page.setRequestInterception(true);
         page.on('request', req => {
-            const type = req.resourceType();
-            if (['image', 'stylesheet', 'font', 'media', 'other'].includes(type)) {
+            if (['font', 'media', 'stylesheet'].includes(req.resourceType())) {
                 req.abort();
             } else {
                 req.continue();
             }
         });
 
-        // Timeout 25s
-        await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 25000 });
-        
-        // Швидкий скрол для тригера lazy-load
-        try {
-            await page.evaluate(async () => {
-                await new Promise((resolve) => {
-                    let totalHeight = 0;
-                    const distance = 400; // менший крок
-                    const timer = setInterval(() => {
-                        const scrollHeight = document.body.scrollHeight;
-                        window.scrollBy(0, distance);
-                        totalHeight += distance;
-                        if(totalHeight >= 4000 || totalHeight >= scrollHeight){ // Не скролимо до безкінечності
-                            clearInterval(timer);
-                            resolve();
-                        }
-                    }, 100);
-                });
+        // Чекаємо networkidle2 (коли мережа заспокоїться)
+        await page.goto(url, { waitUntil: 'networkidle2', timeout: 30000 });
+
+        // Скролимо сторінку, щоб завантажити Lazy Load картинки
+        await page.evaluate(async () => {
+            await new Promise((resolve) => {
+                let totalHeight = 0;
+                const distance = 300;
+                const timer = setInterval(() => {
+                    window.scrollBy(0, distance);
+                    totalHeight += distance;
+                    if(totalHeight >= 3000){
+                        clearInterval(timer);
+                        resolve();
+                    }
+                }, 100);
             });
-        } catch(e) {} // ігноруємо помилки скролу
-        
-        // Отримуємо контент
-        const html = await page.content();
-        return html;
+        });
+
+        return await page.content();
     } catch (e) {
         console.log(`   Fetch failed: ${e.message}`);
         return null;
@@ -290,72 +237,91 @@ async function fetchPage(browser, url) {
 async function googleSearch(keyword) {
     const apiKey = process.env.GOOGLE_API_KEY;
     const cx = process.env.GOOGLE_CX;
-    if (!apiKey || !cx) throw new Error('Google API not configured');
-
-    const url = `https://www.googleapis.com/customsearch/v1?key=${apiKey}&cx=${cx}&q=${encodeURIComponent(keyword)}&num=10&gl=au&cr=countryAU`;
+    if (!apiKey || !cx) return [];
     
     try {
+        // Додаємо "buy" до запиту для кращої релевантності
+        const query = `${keyword} buy australia`; 
+        const url = `https://www.googleapis.com/customsearch/v1?key=${apiKey}&cx=${cx}&q=${encodeURIComponent(query)}&num=10&gl=au&cr=countryAU`;
         const response = await axios.get(url);
+        
         if (!response.data.items) return [];
 
-        const blocked = ['reddit', 'wiki', 'youtube', 'facebook', 'twitter', 'pinterest', 'instagram', 'tiktok'];
+        const blocked = ['reddit', 'wiki', 'youtube', 'facebook', 'twitter', 'pinterest', 'instagram', 'tiktok', 'blog', 'news'];
         return response.data.items
             .map(item => item.link)
             .filter(link => !blocked.some(b => link.includes(b)));
-    } catch(e) {
-        console.error("Google Search Error:", e.message);
-        return [];
-    }
+    } catch(e) { return []; }
 }
 
-// ============ AI PARSING WITH CHEERIO (BETTER CLEANING) ============
+// ============ AI PARSING (Повністю виправлено) ============
 async function parseHtmlWithAI(html, url, keyword) {
-    // 1. Load HTML into Cheerio
     const $ = cheerio.load(html);
 
-    // 2. Remove Junk (Garbage Collection)
-    $('script, style, noscript, svg, iframe, header, footer, nav, form').remove();
-    $('[class*="menu"], [class*="nav"], [class*="footer"], [class*="popup"], [class*="cookie"]').remove();
+    // 1. ВИПРАВЛЕННЯ LAZY LOADING
+    // Знаходимо картинки, де src пустий, але є data-src
+    $('img').each((i, el) => {
+        const dataSrc = $(el).attr('data-src') || $(el).attr('data-srcset') || $(el).attr('data-lazy-src');
+        if (dataSrc) {
+            $(el).attr('src', dataSrc.split(' ')[0]); // беремо першу картинку якщо їх список
+        }
+    });
+
+    // 2. М'ЯКА ОЧИСТКА (Видалили агресивні фільтри)
+    $('script, style, noscript, svg, iframe, header, footer').remove();
+    // НЕ видаляємо nav або menu, бо часто товари всередині
     
-    // 3. Extract text logic - більш розумний підхід
-    // Ми шукаємо елементи, які можуть бути контейнерами товарів
-    // Замість сирого HTML ми спробуємо спростити структуру
+    // 3. ЗНАХОДЖЕННЯ ОСНОВНОГО КОНТЕНТУ
+    // Спробуємо знайти main або схожі контейнери. Якщо немає - беремо body.
+    let content = $('main').html() || $('#content').html() || $('.products').html() || $('body').html();
     
-    // Видаляємо всі атрибути крім src та href для економії токенів
-    $('*').each((i, el) => {
+    if (!content) return [];
+
+    // Чистимо HTML від зайвих атрибутів, щоб зменшити розмір
+    const clean$ = cheerio.load(content);
+    clean$('*').each((i, el) => {
         const attribs = el.attribs;
-        const keep = ['src', 'href']; // Залишаємо тільки посилання
+        const keep = ['src', 'href', 'class']; // залишаємо class для контексту
         Object.keys(attribs).forEach(attr => {
-            if (!keep.includes(attr)) $(el).removeAttr(attr);
+            if (!keep.includes(attr)) clean$(el).removeAttr(attr);
         });
     });
 
-    // Беремо body, але лімітуємо довжину розумніше
-    let cleanedHtml = $('body').html() || '';
+    // Обрізаємо до 45000 символів
+    const truncated = clean$('body').html().replace(/\s+/g, ' ').trim().substring(0, 45000);
     
-    // Видаляємо пусті теги та зайві пробіли
-    cleanedHtml = cleanedHtml.replace(/<[^/>][^>]*><\/[^>]+>/g, "").replace(/\s+/g, ' ').trim();
-    
-    // Ліміт токенів - тепер ми відправляємо чистішу розмітку
-    const truncated = cleanedHtml.substring(0, 45000); 
-    console.log(`   📝 Sending ${truncated.length} clean chars to AI`);
+    if (truncated.length < 500) {
+        console.log(`   ⚠️ Content too short (${truncated.length} chars)`);
+        return [];
+    }
+
+    console.log(`   📝 Sending ${truncated.length} chars to AI`);
 
     const prompt = `
-    Analyze this HTML snippet from an Australian e-commerce site searched for "${keyword}".
-    Identify the main PRODUCT GRID. Ignore "Related products" or "You may also like".
+    I have an HTML snippet from an Australian online store. 
+    User searched for: "${keyword}".
+    
+    Extract a list of products found in the PRODUCT GRID.
+    Do NOT include:
+    - Navigation menu items
+    - "Related products" or "You might also like"
+    - Categories (unless they are the main result)
+    - Blog posts
 
-    Extract products into a JSON Array.
-    Format: [{"title": "String", "price": NumberOrString, "imageUrl": "String", "productUrl": "String"}]
+    Return a JSON Array:
+    [
+      {
+        "title": "Exact Product Name",
+        "price": "Price string (e.g. $29.99) or null",
+        "imageUrl": "Full image URL",
+        "productUrl": "Full link URL"
+      }
+    ]
 
     Rules:
-    1. Title: Must be the specific product name.
-    2. Price: Extract raw number or string (e.g. "29.99" or "$29.99"). If unavailable, set null.
-    3. Image: Find the main product image (src).
-    4. Link: Find the link to the product page (href).
-    5. Exclude items that are obviously categories, ads, or blog posts.
-    6. Max 15 items.
-
-    Response MUST be valid JSON only. No markdown.
+    1. If a product has no image, SKIP IT.
+    2. If a product is clearly just an ad, SKIP IT.
+    3. Max 10 items.
 
     HTML Snippet:
     ${truncated}
@@ -363,12 +329,11 @@ async function parseHtmlWithAI(html, url, keyword) {
 
     try {
         let responseText;
-        
         if (AI_PROVIDER === 'openai') {
             const completion = await openai.chat.completions.create({
                 model: 'gpt-4o-mini',
                 messages: [
-                    { role: 'system', content: 'You are a JSON extractor API. Output pure JSON.' },
+                    { role: 'system', content: 'You are a JSON extraction bot. Output strictly valid JSON array.' },
                     { role: 'user', content: prompt }
                 ],
                 temperature: 0,
@@ -376,9 +341,9 @@ async function parseHtmlWithAI(html, url, keyword) {
             });
             responseText = completion.choices[0].message.content;
         } else {
-            const resp = await axios.post(
+             const resp = await axios.post(
                 `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${process.env.GEMINI_API_KEY}`,
-                { contents: [{ parts: [{ text: prompt }] }], generationConfig: { temperature: 0, maxOutputTokens: 8000 } }
+                { contents: [{ parts: [{ text: prompt }] }] }
             );
             responseText = resp.data.candidates[0].content.parts[0].text;
         }
@@ -386,20 +351,17 @@ async function parseHtmlWithAI(html, url, keyword) {
         const jsonStr = responseText.replace(/```json|```/gi, '').trim();
         const start = jsonStr.indexOf('[');
         const end = jsonStr.lastIndexOf(']');
-        
         if (start === -1 || end === -1) return [];
         
-        const products = JSON.parse(jsonStr.substring(start, end + 1));
-
+        const rawProducts = JSON.parse(jsonStr.substring(start, end + 1));
         const baseUrl = new URL(url).origin;
-        
-        return products.map(p => ({
+
+        return rawProducts.map(p => ({
             title: p.title,
             price: p.price,
             imageUrl: normalizeUrl(p.imageUrl, baseUrl),
-            productUrl: normalizeUrl(p.productUrl, baseUrl),
-            supplier: new URL(url).hostname
-        }));
+            productUrl: normalizeUrl(p.productUrl, baseUrl)
+        })).filter(p => p.imageUrl && p.productUrl); // Ще одна перевірка на наявність даних
 
     } catch (error) {
         console.log(`   ❌ AI Error: ${error.message}`);
@@ -409,13 +371,12 @@ async function parseHtmlWithAI(html, url, keyword) {
 
 function normalizeUrl(urlStr, baseUrl) {
     if (!urlStr) return null;
+    if (urlStr.startsWith('data:')) return null;
     try {
-        // Якщо це base64 картинка - ігноруємо або повертаємо як є (часто це плейсхолдер)
-        if (urlStr.startsWith('data:')) return null; 
+        // Виправляємо "поламані" посилання //example.com
+        if (urlStr.startsWith('//')) return 'https:' + urlStr;
         return new URL(urlStr, baseUrl).href;
-    } catch (e) {
-        return null;
-    }
+    } catch (e) { return null; }
 }
 
 const PORT = process.env.PORT || 8080;
