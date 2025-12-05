@@ -159,7 +159,6 @@ app.post('/api/search', async (req, res) => {
             return res.end();
         }
 
-        // Запускаємо один браузер для всього запиту
         const isWindows = process.platform === 'win32';
         browser = await puppeteer.launch({
             headless: 'new',
@@ -172,16 +171,7 @@ app.post('/api/search', async (req, res) => {
                 '--disable-dev-shm-usage',
                 '--disable-gpu',
                 '--single-process',
-                '--no-zygote',
-                '--disable-extensions',
-                '--disable-background-networking',
-                '--disable-default-apps',
-                '--disable-sync',
-                '--disable-translate',
-                '--hide-scrollbars',
-                '--metrics-recording-only',
-                '--mute-audio',
-                '--no-first-run'
+                '--no-zygote'
             ]
         });
 
@@ -210,6 +200,8 @@ app.post('/api/search', async (req, res) => {
                 if (newProducts.length > 0) {
                     console.log(`   ✅ Found ${newProducts.length} new products`);
                     sendEvent('products', { site: url, newProducts, totalSoFar: allProducts.length });
+                } else {
+                    console.log(`   ⚠️ No products extracted`);
                 }
             } catch (error) {
                 console.log(`   ❌ Failed: ${error.message}`);
@@ -236,7 +228,6 @@ async function fetchPage(browser, url) {
     try {
         await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
         
-        // Блокуємо важкі ресурси
         await page.setRequestInterception(true);
         page.on('request', req => {
             if (['image', 'stylesheet', 'font', 'media'].includes(req.resourceType())) {
@@ -250,23 +241,13 @@ async function fetchPage(browser, url) {
         
         // Скролимо для lazy-loading
         await page.evaluate(async () => {
-            await new Promise((resolve) => {
-                let totalHeight = 0;
-                const distance = 500;
-                const maxScroll = 5000; // Макс 5000px
-                const timer = setInterval(() => {
-                    window.scrollBy(0, distance);
-                    totalHeight += distance;
-                    if (totalHeight >= maxScroll) {
-                        clearInterval(timer);
-                        resolve();
-                    }
-                }, 100);
-            });
+            for (let i = 0; i < 5; i++) {
+                window.scrollBy(0, 1000);
+                await new Promise(r => setTimeout(r, 200));
+            }
         });
         
-        // Чекаємо на контент
-        await new Promise(r => setTimeout(r, 2000));
+        await new Promise(r => setTimeout(r, 1500));
         
         const html = await page.content();
         console.log(`   📊 HTML: ${html.length} chars`);
@@ -283,11 +264,11 @@ async function googleSearch(keyword) {
     const cx = process.env.GOOGLE_CX;
     if (!apiKey || !cx) throw new Error('Google API not configured');
 
-    const url = `https://www.googleapis.com/customsearch/v1?key=${apiKey}&cx=${cx}&q=${encodeURIComponent(keyword)}&num=10&gl=au&cr=countryAU`;
+    const url = `https://www.googleapis.com/customsearch/v1?key=${apiKey}&cx=${cx}&q=${encodeURIComponent(keyword + ' buy australia')}&num=10&gl=au&cr=countryAU`;
     const response = await axios.get(url);
     if (!response.data.items) return [];
 
-    const blocked = ['reddit.com', 'wikipedia.org', 'youtube.com', 'facebook.com', 'twitter.com', 'pinterest.com'];
+    const blocked = ['reddit.com', 'wikipedia.org', 'youtube.com', 'facebook.com', 'twitter.com', 'pinterest.com', 'ebay.com.au'];
     return response.data.items
         .map(item => item.link)
         .filter(link => !blocked.some(b => link.includes(b)));
@@ -295,119 +276,165 @@ async function googleSearch(keyword) {
 
 // ============ AI PARSING ============
 async function parseHtmlWithAI(html, url, keyword) {
-    // Агресивна очистка HTML
+    // Крок 1: Очистка HTML
     let cleaned = html
-        // Видаляємо скрипти, стилі
-        .replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, '')
-        .replace(/<style\b[^<]*(?:(?!<\/style>)<[^<]*)*<\/style>/gi, '')
-        .replace(/<noscript\b[^<]*(?:(?!<\/noscript>)<[^<]*)*<\/noscript>/gi, '')
-        // Видаляємо header, footer, nav, aside
-        .replace(/<header\b[^<]*(?:(?!<\/header>)<[^<]*)*<\/header>/gi, '')
-        .replace(/<footer\b[^<]*(?:(?!<\/footer>)<[^<]*)*<\/footer>/gi, '')
-        .replace(/<nav\b[^<]*(?:(?!<\/nav>)<[^<]*)*<\/nav>/gi, '')
-        .replace(/<aside\b[^<]*(?:(?!<\/aside>)<[^<]*)*<\/aside>/gi, '')
-        // Видаляємо коментарі та SVG
+        .replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, '')
+        .replace(/<style\b[^>]*>[\s\S]*?<\/style>/gi, '')
+        .replace(/<noscript\b[^>]*>[\s\S]*?<\/noscript>/gi, '')
+        .replace(/<header\b[^>]*>[\s\S]*?<\/header>/gi, '')
+        .replace(/<footer\b[^>]*>[\s\S]*?<\/footer>/gi, '')
+        .replace(/<nav\b[^>]*>[\s\S]*?<\/nav>/gi, '')
         .replace(/<!--[\s\S]*?-->/g, '')
-        .replace(/<svg\b[^<]*(?:(?!<\/svg>)<[^<]*)*<\/svg>/gi, '')
-        // Видаляємо атрибути class, style, data-*
-        .replace(/\s(class|style|data-[a-z-]+)="[^"]*"/gi, '')
-        // Пробіли
+        .replace(/<svg\b[^>]*>[\s\S]*?<\/svg>/gi, '')
         .replace(/\s+/g, ' ')
         .trim();
 
-    // Спробуємо знайти main контент
+    // Крок 2: Знаходимо контейнер з продуктами
+    let productHtml = cleaned;
+    
+    // Спробуємо знайти main
     const mainMatch = cleaned.match(/<main[^>]*>([\s\S]*?)<\/main>/i);
-    if (mainMatch && mainMatch[1].length > 5000) {
-        cleaned = mainMatch[1];
-        console.log(`   📦 Using <main> content: ${cleaned.length} chars`);
+    if (mainMatch && mainMatch[1].length > 3000) {
+        productHtml = mainMatch[1];
+        console.log(`   📦 Found <main>: ${productHtml.length} chars`);
+    }
+    
+    // Або section з products
+    if (productHtml.length > 150000) {
+        const sectionMatch = cleaned.match(/<section[^>]*>([\s\S]*?)<\/section>/gi);
+        if (sectionMatch) {
+            const largest = sectionMatch.reduce((a, b) => a.length > b.length ? a : b);
+            if (largest.length > 5000) {
+                productHtml = largest;
+                console.log(`   📦 Found <section>: ${productHtml.length} chars`);
+            }
+        }
     }
 
-    // Ліміт 100k для більшого охоплення
-    const truncated = cleaned.substring(0, 100000);
-    console.log(`   📝 Sending ${truncated.length} chars to AI (from ${cleaned.length})`);
+    // Крок 3: Обмежуємо розмір (60k - оптимально для AI)
+    const truncated = productHtml.substring(0, 60000);
+    console.log(`   📝 Sending ${truncated.length} chars to AI`);
 
-    const prompt = `You are a product data extractor for Australian e-commerce sites.
-Search term: "${keyword}"
+    // Крок 4: Простий чіткий prompt
+    const prompt = `Extract all products from this HTML page.
+Search: "${keyword}"
 
-IMPORTANT INSTRUCTIONS:
-1. Find ALL product listings on this page related to "${keyword}"
-2. Products are usually in repeating HTML structures (cards, grid items, list items)
-3. Look for patterns like: product-card, product-item, product-tile, grid-item, etc.
-4. Extract EVERY product you can find, even if data is incomplete
+Return ONLY a JSON array (no other text):
+[{"title":"Product Name","price":19.99,"imageUrl":"/img.jpg","productUrl":"/product"}]
 
-For EACH product extract:
-- title: the product name (required)
-- price: numeric price without currency symbol (e.g., 9.99) or null
-- currency: "AUD"
-- imageUrl: image src URL or path
-- productUrl: link href URL or path
-
-Return JSON array (max 30 products):
-[{"title":"...","price":9.99,"currency":"AUD","imageUrl":"...","productUrl":"..."}]
-
-Return [] ONLY if there are genuinely NO products on the page.
+Rules:
+- title: product name (required)
+- price: number only, or null if not shown
+- imageUrl: image src attribute
+- productUrl: link href attribute
+- Max 30 products
+- Return [] if no products
 
 HTML:
 ${truncated}`;
 
-    try {
-        let responseText;
-        if (AI_PROVIDER === 'openai') {
-            const completion = await openai.chat.completions.create({
-                model: 'gpt-4o-mini',
-                messages: [{ role: 'user', content: prompt }],
-                temperature: 0,
-                max_tokens: 4000
-            });
-            responseText = completion.choices[0].message.content;
-        } else {
-            const resp = await axios.post(
-                `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${process.env.GEMINI_API_KEY}`,
-                { contents: [{ parts: [{ text: prompt }] }], generationConfig: { temperature: 0, maxOutputTokens: 8000 } }
-            );
-            responseText = resp.data.candidates[0].content.parts[0].text;
-        }
-
-        // Парсинг JSON
-        const match = responseText.match(/\[[\s\S]*\]/);
-        if (!match) {
-            console.log(`   ⚠️ No JSON array in response`);
-            return [];
-        }
-        
-        let products;
+    // Крок 5: Виклик AI з retry
+    for (let attempt = 1; attempt <= 2; attempt++) {
         try {
-            products = JSON.parse(match[0]);
-        } catch (e) {
-            // Спробуємо виправити JSON
-            const fixed = match[0]
+            let responseText;
+            
+            if (AI_PROVIDER === 'openai') {
+                const completion = await openai.chat.completions.create({
+                    model: 'gpt-4o-mini',
+                    messages: [
+                        { role: 'system', content: 'You extract product data from HTML and return JSON arrays only.' },
+                        { role: 'user', content: prompt }
+                    ],
+                    temperature: 0,
+                    max_tokens: 4000
+                });
+                responseText = completion.choices[0].message.content;
+            } else {
+                const resp = await axios.post(
+                    `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${process.env.GEMINI_API_KEY}`,
+                    { contents: [{ parts: [{ text: prompt }] }], generationConfig: { temperature: 0, maxOutputTokens: 8000 } }
+                );
+                responseText = resp.data.candidates[0].content.parts[0].text;
+            }
+
+            // Логуємо відповідь
+            const preview = responseText.substring(0, 150).replace(/\n/g, ' ');
+            console.log(`   🤖 AI[${attempt}]: ${preview}...`);
+
+            // Парсимо JSON
+            let jsonStr = responseText;
+            
+            // Видаляємо markdown
+            jsonStr = jsonStr.replace(/```json\s*/gi, '').replace(/```\s*/gi, '');
+            
+            // Знаходимо масив
+            const startIdx = jsonStr.indexOf('[');
+            const endIdx = jsonStr.lastIndexOf(']');
+            
+            if (startIdx === -1 || endIdx === -1) {
+                console.log(`   ⚠️ No array brackets found`);
+                if (attempt < 2) continue;
+                return [];
+            }
+            
+            jsonStr = jsonStr.substring(startIdx, endIdx + 1);
+            
+            // Виправляємо типові помилки JSON
+            jsonStr = jsonStr
                 .replace(/,\s*]/g, ']')
                 .replace(/,\s*}/g, '}')
-                .replace(/'/g, '"');
-            products = JSON.parse(fixed);
-        }
+                .replace(/'/g, '"')
+                .replace(/\n/g, ' ')
+                .replace(/\t/g, ' ');
 
-        const baseUrl = new URL(url).origin;
-        
-        return products.map(p => ({
-            title: p.title,
-            price: p.price || null,
-            currency: 'AUD',
-            imageUrl: p.imageUrl?.startsWith('http') ? p.imageUrl : 
-                      p.imageUrl?.startsWith('//') ? 'https:' + p.imageUrl :
-                      p.imageUrl ? baseUrl + (p.imageUrl.startsWith('/') ? '' : '/') + p.imageUrl : null,
-            productUrl: p.productUrl?.startsWith('http') ? p.productUrl : 
-                        p.productUrl?.startsWith('//') ? 'https:' + p.productUrl :
-                        p.productUrl ? baseUrl + (p.productUrl.startsWith('/') ? '' : '/') + p.productUrl : url,
-            supplier: new URL(url).hostname.replace('www.', '')
-        })).filter(p => p.title?.length > 3);
-    } catch (e) {
-        console.log(`   ⚠️ AI error: ${e.message}`);
-        return [];
+            let products;
+            try {
+                products = JSON.parse(jsonStr);
+            } catch (parseErr) {
+                console.log(`   ⚠️ JSON parse error: ${parseErr.message}`);
+                if (attempt < 2) continue;
+                return [];
+            }
+
+            if (!Array.isArray(products)) {
+                console.log(`   ⚠️ Result is not an array`);
+                if (attempt < 2) continue;
+                return [];
+            }
+
+            // Нормалізуємо URLs
+            const baseUrl = new URL(url).origin;
+            
+            return products
+                .filter(p => p.title && p.title.length > 2)
+                .slice(0, 30)
+                .map(p => ({
+                    title: String(p.title).trim(),
+                    price: typeof p.price === 'number' ? p.price : null,
+                    currency: 'AUD',
+                    imageUrl: normalizeUrl(p.imageUrl, baseUrl),
+                    productUrl: normalizeUrl(p.productUrl, baseUrl) || url,
+                    supplier: new URL(url).hostname.replace('www.', '')
+                }));
+
+        } catch (error) {
+            console.log(`   ⚠️ AI attempt ${attempt} error: ${error.message}`);
+            if (attempt === 2) return [];
+            await new Promise(r => setTimeout(r, 500));
+        }
     }
+    
+    return [];
+}
+
+// ============ URL HELPER ============
+function normalizeUrl(urlStr, baseUrl) {
+    if (!urlStr) return null;
+    if (urlStr.startsWith('http')) return urlStr;
+    if (urlStr.startsWith('//')) return 'https:' + urlStr;
+    if (urlStr.startsWith('/')) return baseUrl + urlStr;
+    return baseUrl + '/' + urlStr;
 }
 
 const PORT = process.env.PORT || 8080;
 app.listen(PORT, () => console.log(`Server: http://localhost:${PORT}\nAI: ${AI_PROVIDER}\n`));
-
-
