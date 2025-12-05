@@ -56,7 +56,7 @@ app.get('/', (req, res) => {
     </style>
 </head>
 <body>
-    <h1>⚡ Turbo Search Australia</h1>
+    <h1>search api</h1>
     <div class="search-box">
         <input type="text" id="keyword" placeholder="Enter product name..." onkeypress="if(event.key==='Enter') run()">
         <button onclick="run()" id="btn">Search</button>
@@ -347,3 +347,4 @@ async function googleSearch(keyword) {
 
 const PORT = process.env.PORT || 8080;
 app.listen(PORT, () => console.log(`Listening on ${PORT}`));
+
