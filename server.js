@@ -18,15 +18,25 @@ const CONCURRENCY = 5;
 const PAGE_TIMEOUT = 15000;
 const AI_PROVIDER = process.env.OPENAI_API_KEY ? 'openai' : 'gemini';
 
-// Стоп-слова (те, що ми точно не продаємо)
+// Чорний список (послуги та сміття)
 const BLACKLIST = [
     'cremation', 'funeral', 'burial', 'service', 'consultation', 'booking', 
-    'course', 'workshop', 'seminar', 'hire', 'rental', 'deposit', 'donation',
-    'login', 'account', 'cart', 'checkout', 'register', 'subscription', 'career'
+    'course', 'workshop', 'seminar', 'hire', 'rental', 'login', 'account', 
+    'cart', 'checkout', 'register', 'subscription', 'career', 'job', 'news'
 ];
 
-// Загальні слова, які ігноруємо при перевірці релевантності
-const STOP_WORDS = ['the', 'and', 'for', 'with', 'australia', 'best', 'top', 'buy', 'shop', 'online'];
+// Слова-зв'язки, які ігноруємо при перевірці
+const STOP_WORDS = ['the', 'and', 'for', 'with', 'australia', 'best', 'top', 'buy', 'shop', 'online', 'custom', 'personalised'];
+
+// СИНОНІМИ (Щоб "package" знаходило "box")
+const SYNONYMS = {
+    'package': ['box', 'mailer', 'packaging', 'bundle', 'kit', 'hamper', 'set', 'carton'],
+    'sticker': ['decal', 'label', 'vinyl', 'adhesive', 'sign'],
+    'decal': ['sticker', 'vinyl', 'transfer'],
+    'shirt': ['tee', 't-shirt', 'apparel', 'top', 'clothing'],
+    'bag': ['tote', 'pouch', 'sack', 'carrier'],
+    'card': ['stationery', 'invite', 'print'],
+};
 
 let openai = null;
 if (process.env.OPENAI_API_KEY) {
@@ -34,7 +44,7 @@ if (process.env.OPENAI_API_KEY) {
     openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 }
 
-console.log(`🚀 FINAL BUILD: ${AI_PROVIDER.toUpperCase()} | Region: AU | 1-Product-Per-Site`);
+console.log(`🚀 AUSTRALIA SEARCH V3: ${AI_PROVIDER.toUpperCase()} | Enhanced Size Detection`);
 
 // ============ UI ============
 app.get('/', (req, res) => {
@@ -44,7 +54,7 @@ app.get('/', (req, res) => {
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>AU Product Search</title>
+    <title>AU Smart Search</title>
     <style>
         body { font-family: -apple-system, system-ui, sans-serif; background: #f8fafc; padding: 20px; max-width: 1200px; margin: 0 auto; color: #334155; }
         .search-box { background: white; padding: 20px; border-radius: 12px; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.05); display: flex; gap: 10px; margin-bottom: 20px; }
@@ -69,7 +79,7 @@ app.get('/', (req, res) => {
         .info { padding: 16px; flex: 1; display: flex; flex-direction: column; }
         .title { font-size: 14px; margin-bottom: 8px; font-weight: 600; color: #0f172a; line-height: 1.4; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
         
-        .meta-row { display: flex; gap: 8px; margin-bottom: 12px; flex-wrap: wrap; }
+        .meta-row { display: flex; gap: 8px; margin-bottom: 12px; flex-wrap: wrap; min-height: 24px; }
         .tag { font-size: 11px; background: #f1f5f9; padding: 4px 8px; border-radius: 4px; color: #475569; font-weight: 500; display: flex; align-items: center; gap: 4px; }
         
         .price { font-size: 20px; font-weight: 700; color: #16a34a; margin-top: auto; }
@@ -79,7 +89,7 @@ app.get('/', (req, res) => {
 </head>
 <body>
     <div class="search-box">
-        <input type="text" id="keyword" placeholder="Search products (e.g., 'custom stickers')..." onkeypress="if(event.key==='Enter') run()">
+        <input type="text" id="keyword" placeholder="Search products (e.g. 'custom bumper stickers')..." onkeypress="if(event.key==='Enter') run()">
         <button onclick="run()" id="btn">Search</button>
     </div>
     
@@ -101,7 +111,7 @@ app.get('/', (req, res) => {
             btn.disabled = true;
             results.innerHTML = '';
             progress.style.width = '5%';
-            status.textContent = 'Initializing search...';
+            status.textContent = 'Searching...';
             
             let count = 0;
 
@@ -137,8 +147,6 @@ app.get('/', (req, res) => {
                                     counter.textContent = count + ' products';
                                     const p = data.p;
                                     const domain = new URL(p.productUrl).hostname.replace('www.','');
-                                    
-                                    // Форматування розміру
                                     const sizeHtml = p.size ? \`<div class="tag">📏 \${p.size}</div>\` : '';
                                     
                                     results.insertAdjacentHTML('beforeend', \`
@@ -149,9 +157,7 @@ app.get('/', (req, res) => {
                                             </div>
                                             <div class="info">
                                                 <div class="title" title="\${p.title}">\${p.title}</div>
-                                                <div class="meta-row">
-                                                    \${sizeHtml}
-                                                </div>
+                                                <div class="meta-row">\${sizeHtml}</div>
                                                 <div class="price">\${p.price}</div>
                                                 <a href="\${p.productUrl}" target="_blank" class="btn-link">View Product</a>
                                             </div>
@@ -160,7 +166,7 @@ app.get('/', (req, res) => {
                                 }
                                 
                                 if(data.type === 'done') {
-                                    status.textContent = \`Search complete. Found \${count} top matches.\`;
+                                    status.textContent = \`Search complete. Found \${count} matches.\`;
                                     progress.style.width = '100%';
                                     btn.disabled = false;
                                 }
@@ -193,7 +199,6 @@ app.post('/api/search', async (req, res) => {
     try {
         send('progress', { msg: 'Google Search (AU)...', done: 0, total: 10 });
         
-        // 1. Google Search (Clean Method)
         const urls = await googleSearch(keyword);
         
         if (urls.length === 0) {
@@ -201,7 +206,7 @@ app.post('/api/search', async (req, res) => {
             return res.end();
         }
 
-        const topUrls = urls.slice(0, 12); // Беремо топ 12
+        const topUrls = urls.slice(0, 15); // Більше сайтів для перевірки
         
         browser = await puppeteer.launch({
             headless: "new",
@@ -214,7 +219,7 @@ app.post('/api/search', async (req, res) => {
 
         send('progress', { msg: `Scanning ${topUrls.length} sites...`, done: 0, total: topUrls.length });
 
-        // 2. Queue Processing
+        // Queue
         let completed = 0;
         const queue = [...topUrls];
         const processedDomains = new Set();
@@ -223,7 +228,6 @@ app.post('/api/search', async (req, res) => {
             while (queue.length > 0) {
                 const url = queue.shift();
                 
-                // Перевірка на унікальність домену (щоб не сканувати одну й ту саму сторінку двічі)
                 try {
                     const domain = new URL(url).hostname;
                     if (processedDomains.has(domain)) continue;
@@ -231,10 +235,10 @@ app.post('/api/search', async (req, res) => {
                     
                     await processSite(browser, url, keyword, send);
                 } catch (e) {
-                    // ignore invalid urls
+                    // ignore
                 } finally {
                     completed++;
-                    send('progress', { msg: `Processing...`, done: completed, total: topUrls.length });
+                    send('progress', { msg: `Scanning...`, done: completed, total: topUrls.length });
                 }
             }
         };
@@ -264,9 +268,25 @@ async function processSite(browser, url, keyword, send) {
         });
 
         await page.setUserAgent(new UserAgent({ deviceCategory: 'desktop' }).toString());
+        
+        // Fast fail timeout
         await page.goto(url, { waitUntil: 'domcontentloaded', timeout: PAGE_TIMEOUT });
+        await new Promise(r => setTimeout(r, 1000));
 
-        await new Promise(r => setTimeout(r, 1500)); // JS Wait
+        // === 1. ВИГРІБАЄМО ПРИХОВАНІ РОЗМІРИ ===
+        // Часто розміри сидять у <select>, які не видно в простому тексті
+        const hiddenOptions = await page.evaluate(() => {
+            const options = [];
+            // Збираємо текст з dropdowns
+            document.querySelectorAll('select option').forEach(opt => {
+                if(opt.innerText.length > 0 && opt.innerText.length < 50) options.push(opt.innerText);
+            });
+            // Збираємо текст з кнопок вибору (часто для розмірів)
+            document.querySelectorAll('[class*="variant"], [class*="option"], [class*="size"]').forEach(el => {
+                if(el.innerText.length > 0 && el.innerText.length < 30) options.push(el.innerText);
+            });
+            return options.join(', ');
+        });
 
         const html = await page.content();
         await page.close();
@@ -276,7 +296,7 @@ async function processSite(browser, url, keyword, send) {
         const baseUrl = new URL(url).origin;
         let candidates = [];
 
-        // --- PHASE 1: JSON-LD (Extraction with Size) ---
+        // --- PHASE 1: JSON-LD ---
         $('script[type="application/ld+json"]').each((i, el) => {
             try {
                 const txt = $(el).html();
@@ -285,24 +305,26 @@ async function processSite(browser, url, keyword, send) {
                 const items = Array.isArray(data) ? data : [data];
                 items.forEach(item => {
                     const type = item['@type'];
-                    if (type === 'Product' || type === 'ItemPage') {
-                        extractFromJson(item, candidates, baseUrl);
-                    }
-                    if (item['@graph']) {
-                        item['@graph'].forEach(g => {
-                            if (g['@type'] === 'Product') extractFromJson(g, candidates, baseUrl);
-                        });
-                    }
+                    if (type === 'Product' || type === 'ItemPage') extractFromJson(item, candidates, baseUrl);
+                    if (item['@graph']) item['@graph'].forEach(g => {
+                        if (g['@type'] === 'Product') extractFromJson(g, candidates, baseUrl);
+                    });
                 });
             } catch (e) {}
         });
 
         // --- PHASE 2: AI FALLBACK ---
         if (candidates.length === 0) {
-            $('script, style, noscript, svg, iframe, header, footer, nav, .menu, .sidebar, .popup, .hidden').remove();
-            const body = $('body').html() || '';
-            const truncated = body.replace(/\s+/g, ' ').substring(0, 60000);
+            $('script, style, noscript, svg, iframe, header, footer, nav, .menu, .sidebar, .popup').remove();
+            
+            let body = $('body').html() || '';
+            
+            // Додаємо знайдені опції розмірів у кінець HTML, щоб AI їх побачив
+            if(hiddenOptions) {
+                body += `\n`;
+            }
 
+            const truncated = body.replace(/\s+/g, ' ').substring(0, 60000);
             if (truncated.length > 500) {
                 const aiProducts = await parseWithAI(truncated, url, keyword);
                 candidates = [...candidates, ...aiProducts];
@@ -316,52 +338,52 @@ async function processSite(browser, url, keyword, send) {
             if (!p.title || !p.imageUrl || !p.productUrl) return;
             if (p.title.length < 3) return;
             
-            // Blacklist check
             const titleLower = p.title.toLowerCase();
             if (BLACKLIST.some(bad => titleLower.includes(bad))) return;
 
-            // Relevance Check (Smart Match)
-            const queryTokens = keyword.toLowerCase().replace(/[^a-z0-9 ]/g, '').split(' ').filter(t => t.length > 2 && !STOP_WORDS.includes(t));
+            // SMART MATCHING (З урахуванням синонімів)
+            const queryWords = keyword.toLowerCase().replace(/[^a-z0-9 ]/g, '').split(' ').filter(t => t.length > 2 && !STOP_WORDS.includes(t));
             let matchCount = 0;
-            queryTokens.forEach(token => { if (titleLower.includes(token)) matchCount++; });
 
+            queryWords.forEach(qWord => {
+                let found = false;
+                // 1. Direct match
+                if (titleLower.includes(qWord)) found = true;
+                // 2. Synonym match
+                else if (SYNONYMS[qWord]) {
+                    if (SYNONYMS[qWord].some(syn => titleLower.includes(syn))) found = true;
+                }
+                
+                if (found) matchCount++;
+            });
+
+            // Логіка пропуску
             let isValid = false;
-            if (queryTokens.length === 0) isValid = true;
-            else if (queryTokens.length === 1) isValid = matchCount >= 1;
-            else isValid = (matchCount / queryTokens.length) >= 0.5;
+            if (queryWords.length === 0) isValid = true;
+            else if (queryWords.length === 1) isValid = matchCount >= 1;
+            else isValid = (matchCount / queryWords.length) >= 0.5; // 50% match
 
             if (!isValid) return;
 
             if (!p.price) p.price = 'Check Site';
-            
             validProducts.push(p);
         });
 
-        // --- PHASE 4: SELECT BEST PRODUCT ---
-        // Якщо знайшли товари, сортуємо їх, щоб вибрати "The One"
+        // --- PHASE 4: SELECT ONE BEST PRODUCT ---
         if (validProducts.length > 0) {
             validProducts.sort((a, b) => {
-                // Система балів:
-                // Ціна є? +2 бали
-                // Розмір є? +2 бали
-                // Ціна не "Check Site"? +1 бал
+                let scoreA = 0, scoreB = 0;
                 
-                let scoreA = 0;
-                let scoreB = 0;
-                
+                // Пріоритет: Ціна + Розмір + Картинка
                 if (a.price && a.price !== 'Check Site') scoreA += 3;
                 if (b.price && b.price !== 'Check Site') scoreB += 3;
                 
-                if (a.size) scoreA += 2;
-                if (b.size) scoreB += 2;
-                
-                // Якщо бали рівні, виграє той, у кого довша назва (часто точніше)
-                if (scoreA === scoreB) return b.title.length - a.title.length;
+                if (a.size) scoreA += 4; // Вищий пріоритет розміру!
+                if (b.size) scoreB += 4;
                 
                 return scoreB - scoreA;
             });
 
-            // Відправляємо тільки ТОП-1 товар
             send('product', { p: validProducts[0] });
         }
 
@@ -377,7 +399,6 @@ function extractFromJson(item, list, baseUrl) {
     let currency = 'AUD';
     let size = null;
     
-    // Price
     if (item.offers) {
         const offer = Array.isArray(item.offers) ? item.offers[0] : item.offers;
         if (offer.price) price = offer.price;
@@ -385,19 +406,13 @@ function extractFromJson(item, list, baseUrl) {
         if (!price && offer.lowPrice) price = offer.lowPrice;
     }
     
-    // Size Detection Logic (Improved)
+    // Improved JSON Size Extraction
     if (item.size) size = item.size;
     else if (item.additionalProperty) {
         const props = Array.isArray(item.additionalProperty) ? item.additionalProperty : [item.additionalProperty];
-        // Шукаємо Size, Dimensions, Width, Capacity, Volume
-        const sizeProp = props.find(p => p.name && /size|dimension|width|weight|capacity|volume/i.test(p.name));
+        // Шукаємо 'Size', 'Dimensions', 'Width'
+        const sizeProp = props.find(p => p.name && /size|dim|width|height|depth/i.test(p.name));
         if (sizeProp) size = sizeProp.value;
-    }
-    // Fallback: шукаємо в описі патерни типу "100ml", "50x50cm"
-    if (!size && item.description) {
-        const sizeRegex = /(\d+(\.\d+)?\s*(ml|l|kg|g|cm|mm|m|inch|'|"))\b/i;
-        const match = item.description.match(sizeRegex);
-        if (match) size = match[0];
     }
     
     let image = item.image;
@@ -416,25 +431,14 @@ function extractFromJson(item, list, baseUrl) {
 }
 
 async function parseWithAI(html, url, keyword) {
-    const prompt = `Extract product details from HTML matching "${keyword}".
+    const prompt = `Extract ONE main product for "${keyword}".
     
     Rules:
-    1. EXTRACT SIZE: Look for dimensions (e.g., "10x10cm", "A4"), volume ("100ml"), or variants ("Large", "XL"). Field: "size".
-    2. SINGLE BEST MATCH: Focus on the main product.
-    3. PRICE: Exact value (e.g. "$19.99").
+    1. SIZE DETECTION: Look for dimensions (mm, cm, inch), paper sizes (A4), variants (S, M, L), or volume (ml, L). Look in dropdown options too.
+    2. RELEVANCE: Ensure it matches "${keyword}" (use synonyms like box/package, sticker/decal).
+    3. JSON Output: [{"title":"...","price":"...","size":"...","imageUrl":"...","productUrl":"..."}]
     
-    JSON Output:
-    [
-      {
-        "title": "Product Name", 
-        "price": "$...", 
-        "size": "...", 
-        "imageUrl": "...", 
-        "productUrl": "..."
-      }
-    ]
-    
-    HTML: ${html}`;
+    HTML Context: ${html}`;
 
     try {
         let content;
@@ -442,7 +446,7 @@ async function parseWithAI(html, url, keyword) {
             const completion = await openai.chat.completions.create({
                 model: 'gpt-4o-mini',
                 messages: [{ role: 'user', content: prompt }],
-                temperature: 0, max_tokens: 3000
+                temperature: 0, max_tokens: 2000
             });
             content = completion.choices[0].message.content;
         } else {
@@ -484,34 +488,22 @@ function normalizeUrl(urlStr, baseUrl) {
 async function googleSearch(keyword) {
     const key = process.env.GOOGLE_API_KEY;
     const cx = process.env.GOOGLE_CX;
-    
-    // Чистий пошук.
-    // Використовуємо нативні фільтри Google (налаштовані в консолі + параметри API)
+    // Нативний запит, без зайвих фільтрів, бо ми налаштували консоль
     const q = encodeURIComponent(`${keyword} buy`);
     
     try {
         const res = await axios.get('https://www.googleapis.com/customsearch/v1', {
             params: {
-                key: key,
-                cx: cx,
-                q: `${keyword} buy`, // Текст запиту
-                num: 10,
-                gl: 'au',         // Geolocation: Australia
-                cr: 'countryAU',  // Restrict to AU documents
-                safe: 'active'
+                key: key, cx: cx, q: q, num: 10,
+                gl: 'au', cr: 'countryAU', safe: 'active'
             }
         });
         
-        const blocked = ['facebook', 'youtube', 'pinterest', 'instagram', 'reddit', 'wikipedia'];
-        
+        const blocked = ['facebook', 'youtube', 'pinterest', 'instagram', 'reddit', 'wikipedia', 'linkedin'];
         return (res.data.items || [])
             .map(i => i.link)
             .filter(link => !blocked.some(b => link.includes(b)));
-            
-    } catch (e) {
-        console.error('Google Search Error:', e.message);
-        return [];
-    }
+    } catch { return []; }
 }
 
 const PORT = process.env.PORT || 8080;
