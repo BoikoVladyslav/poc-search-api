@@ -261,7 +261,68 @@ app.post('/api/search', async (req, res) => {
         res.end();
     }
 });
+async function googleSearch(keyword) {
+    const key = process.env.GOOGLE_API_KEY;
+    const cx = process.env.GOOGLE_CX;
+    
+    console.log('=== GOOGLE SEARCH DEBUG ===');
+    console.log('API Key:', key ? `${key.substring(0, 10)}...` : 'MISSING');
+    console.log('CX:', cx ? `${cx.substring(0, 10)}...` : 'MISSING');
+    console.log('Keyword:', keyword);
+    
+    const query = `${keyword} buy australia -cremation -funeral -hire -course`;
+    const q = encodeURIComponent(query);
+    
+    console.log('Query:', query);
+    
+    const fetchPage = async (start) => {
+        try {
+            const url = `https://www.googleapis.com/customsearch/v1?key=${key}&cx=${cx}&q=${q}&num=10&start=${start}&gl=au&cr=countryAU&safe=active`;
+            console.log(`Fetching page ${start}...`);
+            
+            const res = await axios.get(url);
+            
+            console.log(`Page ${start} returned:`, res.data.items?.length || 0, 'items');
+            if (res.data.items && res.data.items.length > 0) {
+                console.log('First result:', res.data.items[0].link);
+            }
+            
+            return res.data.items || [];
+        } catch (e) {
+            console.error(`Google search page ${start} ERROR:`, e.response?.data || e.message);
+            return [];
+        }
+    };
 
+    try {
+        const [page1, page2] = await Promise.all([
+            fetchPage(1),
+            fetchPage(11)
+        ]);
+        
+        let results = [...page1, ...page2];
+        console.log(`Total from Google: ${results.length} results`);
+        
+        const blocked = ['facebook', 'youtube', 'pinterest', 'instagram', 'reddit', 'wikipedia', 'linkedin', 'twitter'];
+        const validUrls = results
+            .map(i => i.link)
+            .filter(link => {
+                const isBlocked = blocked.some(b => link.includes(b));
+                if (isBlocked) console.log('BLOCKED:', link);
+                return !isBlocked;
+            });
+        
+        console.log(`After filtering: ${validUrls.length} sites`);
+        console.log('Final URLs:', validUrls.slice(0, 5));
+        console.log('=== END DEBUG ===');
+        
+        return validUrls;
+            
+    } catch (e) {
+        console.error('Google search FATAL error:', e.message);
+        return [];
+    }
+}
 async function processSite(browser, url, keyword, send) {
     let page = null;
     try {
@@ -594,3 +655,4 @@ async function googleSearch(keyword) {
 
 const PORT = process.env.PORT || 8080;
 app.listen(PORT, () => console.log(`✅ Server running on port ${PORT}`));
+
