@@ -14,16 +14,28 @@ app.use(cors());
 app.use(express.json());
 
 // === CONFIG ===
-const CONCURRENCY = 5;
+const CONCURRENCY = 5; // 5 вкладок одночасно (оптимально для швидкості/пам'яті)
 const PAGE_TIMEOUT = 15000;
+const MAX_SITES = 20; // ⚡ ШУКАЄМО ТЕПЕР 20 САЙТІВ
 const AI_PROVIDER = process.env.OPENAI_API_KEY ? 'openai' : 'gemini';
 
-// Blacklist залишаємо, він корисний
+// Blacklist
 const BLACKLIST = [
     'cremation', 'funeral', 'burial', 'service', 'consultation', 'booking', 
-    'course', 'workshop', 'seminar', 'hire', 'rental', 'login', 'account', 
-    'cart', 'checkout', 'register', 'subscription', 'career', 'job', 'news'
+    'course', 'workshop', 'seminar', 'hire', 'rental', 'deposit', 'donation',
+    'login', 'account', 'cart', 'checkout', 'register', 'subscription', 'career', 'job'
 ];
+
+const STOP_WORDS = ['the', 'and', 'for', 'with', 'australia', 'best', 'top', 'buy', 'shop', 'online', 'custom'];
+
+// Synonyms
+const SYNONYMS = {
+    'package': ['box', 'mailer', 'packaging', 'bundle', 'kit', 'hamper', 'set'],
+    'sticker': ['decal', 'label', 'vinyl', 'adhesive'],
+    'decal': ['sticker', 'vinyl'],
+    'shirt': ['tee', 't-shirt', 'apparel', 'top'],
+    'bag': ['tote', 'pouch', 'sack']
+};
 
 let openai = null;
 if (process.env.OPENAI_API_KEY) {
@@ -31,7 +43,7 @@ if (process.env.OPENAI_API_KEY) {
     openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 }
 
-console.log(`🚀 STABLE SEARCH: ${AI_PROVIDER.toUpperCase()} | Auto-Retry Enabled`);
+console.log(`🚀 SEARCH V4: ${AI_PROVIDER.toUpperCase()} | Scanning top ${MAX_SITES} sites`);
 
 // ============ UI ============
 app.get('/', (req, res) => {
@@ -41,45 +53,54 @@ app.get('/', (req, res) => {
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>AU Search Debug</title>
+    <title>AU Deep Search (20 Sites)</title>
     <style>
         body { font-family: -apple-system, system-ui, sans-serif; background: #f8fafc; padding: 20px; max-width: 1200px; margin: 0 auto; color: #334155; }
         .search-box { background: white; padding: 20px; border-radius: 12px; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.05); display: flex; gap: 10px; margin-bottom: 20px; }
-        input { flex: 1; padding: 14px; border: 2px solid #e2e8f0; border-radius: 8px; font-size: 16px; outline: none; }
-        button { padding: 14px 32px; background: #3b82f6; color: white; border: none; border-radius: 8px; font-weight: 600; cursor: pointer; }
-        button:disabled { background: #94a3b8; }
+        input { flex: 1; padding: 14px; border: 2px solid #e2e8f0; border-radius: 8px; font-size: 16px; outline: none; transition: 0.2s; }
+        input:focus { border-color: #3b82f6; }
+        button { padding: 14px 32px; background: #3b82f6; color: white; border: none; border-radius: 8px; font-weight: 600; cursor: pointer; transition: 0.2s; }
+        button:hover { background: #2563eb; }
+        button:disabled { background: #94a3b8; cursor: not-allowed; }
         
-        .status-bar { display: flex; justify-content: space-between; margin-bottom: 10px; font-size: 13px; color: #64748b; }
-        .progress-line { height: 4px; background: #e2e8f0; width: 100%; margin-bottom: 20px; }
+        .status-bar { display: flex; justify-content: space-between; margin-bottom: 10px; font-size: 14px; color: #64748b; font-weight: 500; }
+        .progress-track { height: 6px; background: #e2e8f0; border-radius: 3px; overflow: hidden; margin-bottom: 24px; }
         .progress-fill { height: 100%; background: #3b82f6; width: 0%; transition: width 0.3s; }
 
         .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 20px; }
         .card { background: white; border-radius: 12px; overflow: hidden; border: 1px solid #e2e8f0; display: flex; flex-direction: column; transition: transform 0.2s; position: relative; }
         .card:hover { transform: translateY(-4px); box-shadow: 0 10px 15px -3px rgba(0,0,0,0.1); }
+        
         .img-wrap { height: 220px; padding: 10px; display: flex; align-items: center; justify-content: center; background: #fff; border-bottom: 1px solid #f1f5f9; position: relative; }
         .card img { max-width: 100%; max-height: 100%; object-fit: contain; }
-        .badge { position: absolute; top: 10px; left: 10px; font-size: 10px; background: rgba(255,255,255,0.9); padding: 4px 8px; border-radius: 4px; border: 1px solid #cbd5e1; font-weight: bold; }
+        .badge { position: absolute; top: 10px; left: 10px; font-size: 10px; background: rgba(255,255,255,0.95); padding: 4px 8px; border-radius: 4px; border: 1px solid #cbd5e1; color: #475569; font-weight: bold; text-transform: uppercase; }
+        
         .info { padding: 16px; flex: 1; display: flex; flex-direction: column; }
         .title { font-size: 14px; margin-bottom: 8px; font-weight: 600; color: #0f172a; line-height: 1.4; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
-        .tag { font-size: 11px; background: #f1f5f9; padding: 4px 8px; border-radius: 4px; color: #475569; font-weight: 500; display: inline-block; margin-bottom: 8px; }
+        
+        .meta-row { display: flex; gap: 8px; margin-bottom: 12px; flex-wrap: wrap; min-height: 24px; }
+        .tag { font-size: 11px; background: #f1f5f9; padding: 4px 8px; border-radius: 4px; color: #475569; font-weight: 500; display: flex; align-items: center; gap: 4px; }
+        
         .price { font-size: 20px; font-weight: 700; color: #16a34a; margin-top: auto; }
-        .btn { margin-top: 12px; text-align: center; background: #f8fafc; color: #334155; text-decoration: none; padding: 12px; border-radius: 8px; font-size: 13px; font-weight: 600; border: 1px solid #e2e8f0; }
-        .btn:hover { background: #e2e8f0; }
+        .btn-link { margin-top: 12px; text-align: center; background: #f8fafc; color: #334155; text-decoration: none; padding: 12px; border-radius: 8px; font-size: 13px; font-weight: 600; transition: 0.2s; border: 1px solid #e2e8f0; }
+        .btn-link:hover { background: #e2e8f0; color: #0f172a; }
     </style>
 </head>
 <body>
     <div class="search-box">
-        <input type="text" id="keyword" placeholder="Product name..." onkeypress="if(event.key==='Enter') run()">
+        <input type="text" id="keyword" placeholder="Search (e.g. 'custom mailer boxes')..." onkeypress="if(event.key==='Enter') run()">
         <button onclick="run()" id="btn">Search</button>
     </div>
-    <div class="status-bar"><span id="status">Ready</span><span id="counter">0 found</span></div>
-    <div class="progress-line"><div class="progress-fill" id="progress"></div></div>
+    
+    <div class="status-bar"><span id="status">Ready</span><span id="counter">0 products</span></div>
+    <div class="progress-track"><div class="progress-fill" id="progress"></div></div>
     <div id="results" class="grid"></div>
 
     <script>
         async function run() {
             const keyword = document.getElementById('keyword').value;
             if(!keyword) return;
+            
             const btn = document.getElementById('btn');
             const status = document.getElementById('status');
             const counter = document.getElementById('counter');
@@ -88,8 +109,9 @@ app.get('/', (req, res) => {
             
             btn.disabled = true;
             results.innerHTML = '';
-            progress.style.width = '5%';
-            status.textContent = 'Starting...';
+            progress.style.width = '2%';
+            status.textContent = 'Initializing deep search...';
+            
             let count = 0;
 
             try {
@@ -98,27 +120,34 @@ app.get('/', (req, res) => {
                     headers: {'Content-Type': 'application/json'},
                     body: JSON.stringify({ keyword })
                 });
+                
                 const reader = response.body.getReader();
                 const decoder = new TextDecoder();
                 
                 while(true) {
                     const {done, value} = await reader.read();
                     if(done) break;
-                    const lines = decoder.decode(value, {stream: true}).split('\\n');
+                    
+                    const chunk = decoder.decode(value, {stream: true});
+                    const lines = chunk.split('\\n');
+                    
                     for(const line of lines) {
                         if(line.startsWith('data: ')) {
                             try {
                                 const data = JSON.parse(line.slice(6));
+                                
                                 if(data.type === 'progress') {
                                     status.textContent = data.msg;
                                     if(data.total > 0) progress.style.width = Math.round((data.done / data.total) * 100) + '%';
                                 }
+                                
                                 if(data.type === 'product') {
                                     count++;
                                     counter.textContent = count + ' products';
                                     const p = data.p;
                                     const domain = new URL(p.productUrl).hostname.replace('www.','');
-                                    const sizeTag = p.size ? \`<div class="tag">📏 \${p.size}</div>\` : '';
+                                    const sizeHtml = p.size ? \`<div class="tag">📏 \${p.size}</div>\` : '';
+                                    
                                     results.insertAdjacentHTML('beforeend', \`
                                         <div class="card">
                                             <div class="img-wrap">
@@ -127,14 +156,16 @@ app.get('/', (req, res) => {
                                             </div>
                                             <div class="info">
                                                 <div class="title" title="\${p.title}">\${p.title}</div>
-                                                \${sizeTag}
+                                                <div class="meta-row">\${sizeHtml}</div>
                                                 <div class="price">\${p.price}</div>
-                                                <a href="\${p.productUrl}" target="_blank" class="btn">View</a>
+                                                <a href="\${p.productUrl}" target="_blank" class="btn-link">View Product</a>
                                             </div>
-                                        </div>\`);
+                                        </div>
+                                    \`);
                                 }
+                                
                                 if(data.type === 'done') {
-                                    status.textContent = \`Done. Found \${count} items.\`;
+                                    status.textContent = \`Search complete. Processed \${data.total} sites.\`;
                                     progress.style.width = '100%';
                                     btn.disabled = false;
                                 }
@@ -165,18 +196,18 @@ app.post('/api/search', async (req, res) => {
 
     let browser = null;
     try {
-        send('progress', { msg: 'Google Search...', done: 0, total: 10 });
+        send('progress', { msg: 'Google Deep Search (20 sites)...', done: 0, total: 20 });
         
-        // 1. ROBUST GOOGLE SEARCH (з авто-повтором)
+        // 1. Google Search (fetch 2 pages)
         const urls = await googleSearch(keyword);
         
         if (urls.length === 0) {
-            console.log('Google returned 0 results.');
             send('done', { total: 0 });
             return res.end();
         }
 
-        const topUrls = urls.slice(0, 15); // Обробляємо більше сайтів
+        // Беремо топ 20
+        const topUrls = urls.slice(0, MAX_SITES);
         
         browser = await puppeteer.launch({
             headless: "new",
@@ -187,7 +218,7 @@ app.post('/api/search', async (req, res) => {
             ]
         });
 
-        send('progress', { msg: `Found ${topUrls.length} sites. Scanning...`, done: 0, total: topUrls.length });
+        send('progress', { msg: `Scanning ${topUrls.length} sites...`, done: 0, total: topUrls.length });
 
         // 2. Queue Logic
         let completed = 0;
@@ -197,6 +228,7 @@ app.post('/api/search', async (req, res) => {
         const worker = async () => {
             while (queue.length > 0) {
                 const url = queue.shift();
+                
                 try {
                     const domain = new URL(url).hostname;
                     if (processedDomains.has(domain)) continue;
@@ -204,22 +236,22 @@ app.post('/api/search', async (req, res) => {
                     
                     await processSite(browser, url, keyword, send);
                 } catch (e) {
-                    // Ignore
+                    // ignore
                 } finally {
                     completed++;
-                    send('progress', { msg: `Processing...`, done: completed, total: topUrls.length });
+                    send('progress', { msg: `Scanning...`, done: completed, total: topUrls.length });
                 }
             }
         };
 
+        // Запускаємо потоки
         const workers = Array(CONCURRENCY).fill(null).map(() => worker());
         await Promise.all(workers);
 
-        send('done', {});
+        send('done', { total: completed });
 
     } catch (e) {
-        console.error(e);
-        send('progress', { msg: 'Server Error: ' + e.message });
+        send('progress', { msg: 'Error: ' + e.message });
     } finally {
         if (browser) await browser.close().catch(() => {});
         res.end();
@@ -238,15 +270,19 @@ async function processSite(browser, url, keyword, send) {
 
         await page.setUserAgent(new UserAgent({ deviceCategory: 'desktop' }).toString());
         await page.goto(url, { waitUntil: 'domcontentloaded', timeout: PAGE_TIMEOUT });
-        await new Promise(r => setTimeout(r, 1000)); // Затримка для JS
+        await new Promise(r => setTimeout(r, 1000));
 
-        // Витягуємо приховані опції (для розмірів)
+        // 1. EXTRACT HIDDEN TEXT (FOR SIZE)
         const hiddenOptions = await page.evaluate(() => {
             const opts = [];
             document.querySelectorAll('select option, .variant, .swatch, .size-box').forEach(el => {
                 if(el.innerText && el.innerText.length < 30) opts.push(el.innerText);
             });
-            return opts.join(', ').substring(0, 500); // Ліміт
+            // Також шукаємо в таблицях (Specifications)
+            document.querySelectorAll('td, th').forEach(el => {
+                if(/size|dim|mm|cm|inch/i.test(el.innerText) && el.innerText.length < 50) opts.push(el.innerText);
+            });
+            return opts.join(', ').substring(0, 800);
         });
 
         const html = await page.content();
@@ -257,13 +293,14 @@ async function processSite(browser, url, keyword, send) {
         const baseUrl = new URL(url).origin;
         let candidates = [];
 
-        // --- 1. JSON-LD Extraction ---
+        // --- PHASE 1: JSON-LD ---
         $('script[type="application/ld+json"]').each((i, el) => {
             try {
                 const json = JSON.parse($(el).html());
                 const items = Array.isArray(json) ? json : [json];
                 items.forEach(item => {
-                    if (item['@type'] === 'Product' || item['@type'] === 'ItemPage') extractFromJson(item, candidates, baseUrl);
+                    const type = item['@type'];
+                    if (type === 'Product' || type === 'ItemPage') extractFromJson(item, candidates, baseUrl);
                     if (item['@graph']) item['@graph'].forEach(g => {
                         if (g['@type'] === 'Product') extractFromJson(g, candidates, baseUrl);
                     });
@@ -271,12 +308,11 @@ async function processSite(browser, url, keyword, send) {
             } catch (e) {}
         });
 
-        // --- 2. AI Fallback ---
+        // --- PHASE 2: AI FALLBACK ---
         if (candidates.length === 0) {
             $('script, style, noscript, svg, iframe, header, footer, nav, .popup').remove();
             let body = $('body').html() || '';
             
-            // Додаємо знайдені розміри в кінець HTML для AI
             if (hiddenOptions) body += `\n`;
             
             const truncated = body.replace(/\s+/g, ' ').substring(0, 60000);
@@ -286,30 +322,45 @@ async function processSite(browser, url, keyword, send) {
             }
         }
 
-        // --- 3. Filter & Sort ---
+        // --- PHASE 3: FILTER & SORT ---
         const validProducts = [];
         candidates.forEach(p => {
             if (!p.title || !p.imageUrl || !p.productUrl) return;
             if (p.title.length < 3) return;
-            
-            // Blacklist check
             if (BLACKLIST.some(bad => p.title.toLowerCase().includes(bad))) return;
 
-            // Soft Relevance Check (Якщо слово із запиту зовсім не зустрічається - підозріло, але не видаляємо жорстко)
-            // Ми довіряємо AI, який вже відфільтрував треш
-            
+            // SYNONYM AWARE CHECK
+            const titleLower = p.title.toLowerCase();
+            const queryWords = keyword.toLowerCase().replace(/[^a-z0-9 ]/g, '').split(' ').filter(t => t.length > 2 && !STOP_WORDS.includes(t));
+            let matchCount = 0;
+
+            queryWords.forEach(qWord => {
+                let found = false;
+                if (titleLower.includes(qWord)) found = true;
+                else if (SYNONYMS[qWord]) {
+                    if (SYNONYMS[qWord].some(syn => titleLower.includes(syn))) found = true;
+                }
+                if (found) matchCount++;
+            });
+
+            // Logic: 50% match required
+            let isValid = false;
+            if (queryWords.length <= 1) isValid = matchCount >= 1;
+            else isValid = (matchCount / queryWords.length) >= 0.5;
+
+            if (!isValid) return;
+
             if (!p.price) p.price = 'Check Site';
             validProducts.push(p);
         });
 
         if (validProducts.length > 0) {
-            // Сортуємо: Наявність ціни > Наявність розміру > Довжина назви
+            // Sort: Price > Size > Title Length
             validProducts.sort((a, b) => {
-                const scoreA = (a.price !== 'Check Site' ? 2 : 0) + (a.size ? 2 : 0);
-                const scoreB = (b.price !== 'Check Site' ? 2 : 0) + (b.size ? 2 : 0);
+                const scoreA = (a.price !== 'Check Site' ? 2 : 0) + (a.size ? 3 : 0); // Розмір важливіший
+                const scoreB = (b.price !== 'Check Site' ? 2 : 0) + (b.size ? 3 : 0);
                 return scoreB - scoreA;
             });
-            // Беремо найкращий
             send('product', { p: validProducts[0] });
         }
 
@@ -330,7 +381,6 @@ function extractFromJson(item, list, baseUrl) {
         else if (o.lowPrice) price = `$${o.lowPrice} ${o.priceCurrency || 'AUD'}`;
     }
 
-    // Size extraction logic
     if (item.size) size = item.size;
     else if (item.additionalProperty) {
         const props = Array.isArray(item.additionalProperty) ? item.additionalProperty : [item.additionalProperty];
@@ -354,8 +404,8 @@ function extractFromJson(item, list, baseUrl) {
 async function parseWithAI(html, url, keyword) {
     const prompt = `Extract ONE main product for "${keyword}".
 Rules:
-1. Ignore services, rentals, courses.
-2. EXTRACT SIZE: look for dimensions (mm, cm), capacity (ml, L), paper size (A4), or options (S, M, L).
+1. Ignore services/courses.
+2. EXTRACT SIZE: dimensions (mm, cm), volume (ml), paper (A4), or options (S, M, L).
 3. JSON Output: [{"title":"...","price":"...","size":"...","imageUrl":"...","productUrl":"..."}]
 Context: ${html}`;
 
@@ -404,33 +454,58 @@ function normalizeUrl(urlStr, baseUrl) {
     } catch { return null; }
 }
 
-// === ROBUST GOOGLE SEARCH ===
+// === GOOGLE SEARCH (2 PAGES = 20 RESULTS) ===
 async function googleSearch(keyword) {
     const key = process.env.GOOGLE_API_KEY;
     const cx = process.env.GOOGLE_CX;
+    const q = encodeURIComponent(`${keyword} buy`);
     
-    // Спроба 1: Жорсткий пошук (тільки Австралія через налаштування двигуна)
-    const queryStrict = encodeURIComponent(`${keyword} buy`);
-    
+    // Функція для запиту однієї сторінки
+    const fetchPage = async (start) => {
+        try {
+            const res = await axios.get('https://www.googleapis.com/customsearch/v1', {
+                params: {
+                    key, cx, q, num: 10, start,
+                    gl: 'au', cr: 'countryAU', safe: 'active'
+                }
+            });
+            return res.data.items || [];
+        } catch (e) {
+            return [];
+        }
+    };
+
     try {
-        // Спочатку пробуємо з параметром cr=countryAU
-        console.log('Trying Strict Search...');
-        let res = await axios.get(`https://www.googleapis.com/customsearch/v1?key=${key}&cx=${cx}&q=${queryStrict}&num=10&gl=au&cr=countryAU&safe=active`);
-        
-        // Якщо пусто, пробуємо Fallback (без cr=countryAU, але з site:.au)
-        if (!res.data.items || res.data.items.length === 0) {
-            console.log('Strict failed. Switching to Fallback...');
-            const queryFallback = encodeURIComponent(`${keyword} buy site:.au`);
-            res = await axios.get(`https://www.googleapis.com/customsearch/v1?key=${key}&cx=${cx}&q=${queryFallback}&num=10&gl=au&safe=active`);
+        // 1. Пробуємо строгий пошук (Page 1)
+        console.log('Fetching Page 1...');
+        let results = await fetchPage(1);
+
+        // Якщо пусто - пробуємо fallback (без cr=countryAU)
+        if (results.length === 0) {
+            console.log('Strict failed. Using Fallback...');
+            const fallbackQ = encodeURIComponent(`${keyword} buy site:.au`);
+            const fallbackRes = await axios.get(`https://www.googleapis.com/customsearch/v1?key=${key}&cx=${cx}&q=${fallbackQ}&num=10&gl=au&safe=active`);
+            results = fallbackRes.data.items || [];
+            
+            // Якщо fallback спрацював, беремо і другу сторінку для нього
+            if (results.length > 0) {
+                const fallbackRes2 = await axios.get(`https://www.googleapis.com/customsearch/v1?key=${key}&cx=${cx}&q=${fallbackQ}&num=10&start=11&gl=au&safe=active`);
+                results = [...results, ...(fallbackRes2.data.items || [])];
+            }
+        } else {
+            // Якщо строгий пошук спрацював, беремо Page 2 строгого пошуку
+            console.log('Fetching Page 2...');
+            const page2 = await fetchPage(11);
+            results = [...results, ...page2];
         }
 
         const blocked = ['facebook', 'youtube', 'pinterest', 'instagram', 'reddit', 'wikipedia', 'linkedin'];
-        return (res.data.items || [])
+        return results
             .map(i => i.link)
             .filter(link => !blocked.some(b => link.includes(b)));
             
     } catch (e) {
-        console.error('Google Search Error:', e.message);
+        console.error('Search error:', e.message);
         return [];
     }
 }
