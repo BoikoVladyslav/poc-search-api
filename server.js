@@ -14,8 +14,8 @@ app.use(cors());
 app.use(express.json());
 
 // === CONFIG ===
-const CONCURRENCY = 5; // Повернули до 5
-const PAGE_TIMEOUT = 15000; // 15s - компроміс між швидкістю та надійністю
+const CONCURRENCY = 5;
+const PAGE_TIMEOUT = 15000;
 const AI_PROVIDER = process.env.OPENAI_API_KEY ? 'openai' : 'gemini';
 
 // Стоп-слова
@@ -33,7 +33,7 @@ if (process.env.OPENAI_API_KEY) {
     openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 }
 
-console.log(`🚀 SMART SEARCH: ${AI_PROVIDER.toUpperCase()} | Speed Optimized`);
+console.log(`🚀 SMART SEARCH: ${AI_PROVIDER.toUpperCase()} | Australia Region`);
 
 // ============ UI ============
 app.get('/', (req, res) => {
@@ -65,6 +65,7 @@ app.get('/', (req, res) => {
         .info { padding: 16px; flex: 1; display: flex; flex-direction: column; }
         .badge { position: absolute; top: 10px; right: 10px; font-size: 10px; background: rgba(255,255,255,0.9); padding: 4px 8px; border-radius: 4px; border: 1px solid #e2e8f0; color: #64748b; font-weight: bold; }
         .title { font-size: 14px; margin-bottom: 8px; font-weight: 600; color: #0f172a; line-height: 1.4; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+        .size { font-size: 12px; color: #64748b; margin-bottom: 6px; background: #f1f5f9; padding: 4px 8px; border-radius: 4px; display: inline-block; }
         .price { font-size: 18px; font-weight: 700; color: #16a34a; margin-top: auto; }
         .btn-link { margin-top: 12px; text-align: center; background: #f8fafc; color: #334155; text-decoration: none; padding: 10px; border-radius: 6px; font-size: 13px; font-weight: 600; transition: 0.2s; border: 1px solid #e2e8f0; }
         .btn-link:hover { background: #e2e8f0; }
@@ -139,6 +140,7 @@ app.get('/', (req, res) => {
                                             </div>
                                             <div class="info">
                                                 <div class="title" title="\${p.title}">\${p.title}</div>
+                                                \${p.size ? \`<div class="size">📐 \${p.size}</div>\` : ''}
                                                 <div class="price">\${p.price}</div>
                                                 <a href="\${p.productUrl}" target="_blank" class="btn-link">View Product</a>
                                             </div>
@@ -147,7 +149,7 @@ app.get('/', (req, res) => {
                                 }
                                 
                                 if(data.type === 'done') {
-                                    status.textContent = \`Done! Found \${count} products.\`;
+                                    status.textContent = \`Done! Found \${count} products from \${data.sites || 0} sites.\`;
                                     progress.style.width = '100%';
                                     btn.disabled = false;
                                 }
@@ -177,18 +179,19 @@ app.post('/api/search', async (req, res) => {
     const send = (type, data) => res.write(`data: ${JSON.stringify({ type, ...data })}\n\n`);
 
     let browser = null;
+    let sitesWithProducts = 0;
+    
     try {
-        send('progress', { msg: 'Google Search...', done: 0, total: 15 });
+        send('progress', { msg: 'Google Search (Australia)...', done: 0, total: 15 });
         
-        // 1. Google Search
+        // 1. Google Search - ОНОВЛЕНО для Австралії
         const urls = await googleSearch(keyword);
         
         if (urls.length === 0) {
-            send('done', { total: 0 });
+            send('done', { total: 0, sites: 0 });
             return res.end();
         }
 
-        // ЗБІЛЬШЕНО: беремо топ 15 сайтів (було 12)
         const topUrls = urls.slice(0, 15);
         
         browser = await puppeteer.launch({
@@ -199,21 +202,32 @@ app.post('/api/search', async (req, res) => {
                 '--disable-dev-shm-usage', 
                 '--disable-accelerated-2d-canvas', 
                 '--disable-gpu',
-                '--blink-settings=imagesEnabled=false' // Повернули - швидше
+                '--blink-settings=imagesEnabled=false'
             ]
         });
 
-        send('progress', { msg: `Scanning ${topUrls.length} sites...`, done: 0, total: topUrls.length });
+        send('progress', { msg: `Scanning ${topUrls.length} Australian sites...`, done: 0, total: topUrls.length });
 
         // 2. Queue Logic
         let completed = 0;
         const queue = [...topUrls];
+        const processedSites = new Set(); // Відстежуємо сайти
         
         const worker = async () => {
             while (queue.length > 0) {
                 const url = queue.shift();
+                const domain = new URL(url).hostname;
+                
+                // Пропускаємо якщо вже обробляли цей домен
+                if (processedSites.has(domain)) {
+                    completed++;
+                    continue;
+                }
+                processedSites.add(domain);
+                
                 try {
-                    await processSite(browser, url, keyword, send);
+                    const found = await processSite(browser, url, keyword, send);
+                    if (found) sitesWithProducts++;
                 } catch (e) {
                     // Silent fail
                 } finally {
@@ -223,11 +237,10 @@ app.post('/api/search', async (req, res) => {
             }
         };
 
-        // 5 паралельних workers
         const workers = Array(CONCURRENCY).fill(null).map(() => worker());
         await Promise.all(workers);
 
-        send('done', {});
+        send('done', { sites: sitesWithProducts });
 
     } catch (e) {
         send('progress', { msg: 'Error: ' + e.message });
@@ -242,7 +255,6 @@ async function processSite(browser, url, keyword, send) {
     try {
         page = await browser.newPage();
         
-        // Block images, fonts, media для ШВИДКОСТІ
         await page.setRequestInterception(true);
         page.on('request', req => {
             if (['image', 'font', 'media', 'stylesheet', 'other'].includes(req.resourceType())) {
@@ -255,7 +267,6 @@ async function processSite(browser, url, keyword, send) {
         await page.setUserAgent(new UserAgent({ deviceCategory: 'desktop' }).toString());
         await page.goto(url, { waitUntil: 'domcontentloaded', timeout: PAGE_TIMEOUT });
 
-        // ЗМЕНШЕНО: 1s замість 2s
         await new Promise(r => setTimeout(r, 1000));
 
         const html = await page.content();
@@ -266,7 +277,7 @@ async function processSite(browser, url, keyword, send) {
         const baseUrl = new URL(url).origin;
         let productsBeforeFilter = [];
 
-        // --- PHASE 1: JSON-LD (швидко) ---
+        // --- PHASE 1: JSON-LD ---
         $('script[type="application/ld+json"]').each((i, el) => {
             try {
                 const txt = $(el).html();
@@ -286,16 +297,13 @@ async function processSite(browser, url, keyword, send) {
             } catch (e) {}
         });
 
-        // --- PHASE 2: AI FALLBACK (умовно) ---
-        // КРИТИЧНО: викликаємо AI тільки якщо JSON-LD дав ДУЖЕ мало
-        // Але AI - повільно, тому робимо це більш агресивно
-        let useAI = productsBeforeFilter.length === 0; // Тільки якщо 0 results
+        // --- PHASE 2: AI FALLBACK ---
+        let useAI = productsBeforeFilter.length === 0;
         
         if (useAI) {
             $('script, style, noscript, svg, iframe, header, footer, nav, .menu, .sidebar, .popup, .hidden, [aria-hidden="true"]').remove();
             
             const body = $('body').html() || '';
-            // ЗМЕНШЕНО: 60k замість 100k для швидкості
             const truncated = body.replace(/\s+/g, ' ').substring(0, 60000);
 
             if (truncated.length > 500) {
@@ -305,17 +313,15 @@ async function processSite(browser, url, keyword, send) {
         }
 
         // --- PHASE 3: SMART FILTER ---
-        const unique = new Map();
-        
+        const validProducts = [];
+
         productsBeforeFilter.forEach(p => {
             if (!p.title || !p.imageUrl || !p.productUrl) return;
             if (p.title.length < 3) return;
             
-            // 1. Blacklist
             const titleLower = p.title.toLowerCase();
             if (BLACKLIST.some(bad => titleLower.includes(bad))) return;
 
-            // 2. KEYWORD MATCHING (ще м'якший)
             const queryTokens = keyword.toLowerCase()
                 .replace(/[^a-z0-9 ]/g, '')
                 .split(' ')
@@ -332,7 +338,6 @@ async function processSite(browser, url, keyword, send) {
                     }
                 }
             } else {
-                // ЗМЕНШЕНО threshold: 33% → 25%
                 let matchCount = 0;
                 queryTokens.forEach(token => {
                     if (titleLower.includes(token)) {
@@ -345,26 +350,42 @@ async function processSite(browser, url, keyword, send) {
                     }
                 });
 
-                const threshold = 0.25; // М'якіше!
+                const threshold = 0.25;
                 if ((matchCount / queryTokens.length) < threshold) return;
             }
 
-            // 3. Price
             if (!p.price) p.price = 'Check Site';
             
-            // 4. Send ОДРАЗУ (не чекаємо інших сайтів)
-            if (!unique.has(p.productUrl)) {
-                unique.set(p.productUrl, true);
-                send('product', { p });
-            }
+            validProducts.push(p);
         });
+
+        // === ОДИН ПРОДУКТ З САЙТУ ===
+        if (validProducts.length > 0) {
+            // Сортуємо: спочатку з ціною, потім з розміром
+            validProducts.sort((a, b) => {
+                const aHasPrice = a.price && a.price !== 'Check Site' ? 1 : 0;
+                const bHasPrice = b.price && b.price !== 'Check Site' ? 1 : 0;
+                if (bHasPrice !== aHasPrice) return bHasPrice - aHasPrice;
+                
+                const aHasSize = a.size ? 1 : 0;
+                const bHasSize = b.size ? 1 : 0;
+                return bHasSize - aHasSize;
+            });
+            
+            const bestProduct = validProducts[0];
+            send('product', { p: bestProduct });
+            return true; // Знайдено продукт
+        }
+        
+        return false; // Не знайдено
 
     } catch (e) {
         if(page) await page.close().catch(() => {});
+        return false;
     }
 }
 
-// Синоніми (РОЗШИРЕНО)
+// Синоніми
 function getSynonyms(word) {
     const synonymMap = {
         'sticker': ['decal', 'label', 'adhesive', 'vinyl'],
@@ -389,12 +410,31 @@ function extractFromJson(item, list, baseUrl) {
     
     let price = null;
     let currency = 'AUD';
+    let size = null;
     
+    // Price
     if (item.offers) {
         const offer = Array.isArray(item.offers) ? item.offers[0] : item.offers;
         if (offer.price) price = offer.price;
         if (offer.priceCurrency) currency = offer.priceCurrency;
         if (!price && offer.lowPrice) price = offer.lowPrice;
+    }
+    
+    // Size - шукаємо в різних полях
+    if (item.size) {
+        size = item.size;
+    } else if (item.additionalProperty) {
+        const props = Array.isArray(item.additionalProperty) ? item.additionalProperty : [item.additionalProperty];
+        const sizeProp = props.find(p => 
+            p.name && (p.name.toLowerCase().includes('size') || p.name.toLowerCase().includes('dimension'))
+        );
+        if (sizeProp) size = sizeProp.value;
+    } else if (item.description) {
+        // Спробуємо витягти розмір з опису
+        const sizeMatch = item.description.match(/(\d+)\s*(x|×)\s*(\d+)\s*(mm|cm|inch|in|")/i);
+        if (sizeMatch) {
+            size = sizeMatch[0];
+        }
     }
     
     let image = item.image;
@@ -405,6 +445,7 @@ function extractFromJson(item, list, baseUrl) {
         list.push({
             title: item.name,
             price: price ? `$${price} ${currency}` : null,
+            size: size,
             imageUrl: normalizeUrl(image, baseUrl),
             productUrl: normalizeUrl(item.url || '', baseUrl) || baseUrl
         });
@@ -417,9 +458,20 @@ async function parseWithAI(html, url, keyword) {
 Rules:
 1. Products for sale only
 2. Must relate to "${keyword}"
-3. Return JSON array: [{"title":"...","price":"$X AUD" or null,"imageUrl":"https://...","productUrl":"https://..."}]
-4. Absolute URLs only
-5. If no products: []
+3. Return JSON array:
+   [
+     {
+       "title": "Product Name",
+       "price": "$X AUD" or null,
+       "size": "100x50mm" or "A4" or "Small" or null,
+       "imageUrl": "https://...",
+       "productUrl": "https://..."
+     }
+   ]
+4. SIZE: Extract dimensions (100x50mm, 200x100cm), paper sizes (A4, A5, A3), or size variants (S, M, L, XL, Small, Medium, Large)
+5. Absolute URLs only
+6. Max 10 products
+7. If no products: []
 
 HTML: ${html}`;
 
@@ -430,7 +482,7 @@ HTML: ${html}`;
                 model: 'gpt-4o-mini',
                 messages: [{ role: 'user', content: prompt }],
                 temperature: 0,
-                max_tokens: 3000 // Зменшено для швидкості
+                max_tokens: 3000
             });
             content = completion.choices[0].message.content;
         } else {
@@ -440,7 +492,7 @@ HTML: ${html}`;
                     contents: [{ parts: [{ text: prompt }] }],
                     generationConfig: { temperature: 0, maxOutputTokens: 3000 }
                 },
-                { timeout: 10000 } // 10s timeout для AI
+                { timeout: 10000 }
             );
             content = resp.data.candidates[0].content.parts[0].text;
         }
@@ -456,6 +508,7 @@ HTML: ${html}`;
         return raw.map(p => ({
             title: p.title,
             price: p.price,
+            size: p.size || null,
             imageUrl: normalizeUrl(p.imageUrl, baseUrl),
             productUrl: normalizeUrl(p.productUrl, baseUrl)
         })).filter(p => p.imageUrl && p.productUrl);
@@ -475,18 +528,32 @@ function normalizeUrl(urlStr, baseUrl) {
     } catch { return null; }
 }
 
+// === GOOGLE SEARCH - ОНОВЛЕНО ДЛЯ АВСТРАЛІЇ ===
 async function googleSearch(keyword) {
     const key = process.env.GOOGLE_API_KEY;
     const cx = process.env.GOOGLE_CX;
     
-    const q = encodeURIComponent(`${keyword} -cremation -funeral -hire -course -pinterest -facebook site:.au`);
+    // Чистий запит + "buy" для e-commerce
+    const q = encodeURIComponent(`${keyword} buy`);
+    
+    const blocked = [
+        'facebook.com', 'youtube.com', 'pinterest.com', 
+        'wikipedia.org', 'reddit.com', 'twitter.com',
+        'instagram.com', 'tiktok.com', 'linkedin.com'
+    ];
     
     try {
-        const res = await axios.get(`https://www.googleapis.com/customsearch/v1?key=${key}&cx=${cx}&q=${q}&num=10`);
+        // gl=au - геолокація Австралія
+        // cr=countryAU - результати з Австралії
+        const res = await axios.get(
+            `https://www.googleapis.com/customsearch/v1?key=${key}&cx=${cx}&q=${q}&num=10&gl=au&cr=countryAU`
+        );
+        
         return (res.data.items || [])
             .map(i => i.link)
-            .filter(l => !l.includes('facebook') && !l.includes('youtube') && !l.includes('pinterest'));
+            .filter(l => !blocked.some(b => l.includes(b)));
     } catch (e) {
+        console.error('Google Search error:', e.message);
         return [];
     }
 }
