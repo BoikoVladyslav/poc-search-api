@@ -54,7 +54,7 @@ app.get('/', (req, res) => {
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Product Search API</title>
+    <title>AU Product Search</title>
     <style>
         body { font-family: -apple-system, system-ui, sans-serif; background: #f8fafc; padding: 20px; max-width: 1200px; margin: 0 auto; color: #334155; }
         .search-box { background: white; padding: 20px; border-radius: 12px; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.05); display: flex; gap: 10px; margin-bottom: 20px; }
@@ -83,7 +83,7 @@ app.get('/', (req, res) => {
 </head>
 <body>
     <div class="search-box">
-        <input type="text" id="keyword" placeholder="SearcH..." onkeypress="if(event.key==='Enter') run()">
+        <input type="text" id="keyword" placeholder="Search Australian products..." onkeypress="if(event.key==='Enter') run()">
         <button onclick="run()" id="btn">Search</button>
     </div>
     <div class="status-bar"><span id="status">Ready</span><span id="counter">0 products from 0 sites</span></div>
@@ -516,7 +516,7 @@ function isValidProduct(p) { return p && p.title && p.imageUrl && p.productUrl; 
 async function googleSearch(keyword) {
     const key = process.env.GOOGLE_API_KEY;
     const cx = process.env.GOOGLE_CX;
-    const query = `${keyword} buy`;
+    const query = `${keyword} buy`; // Removed manual encoding
     
     const fetchPage = async (start) => {
         try {
@@ -543,5 +543,6 @@ app.listen(PORT, () => {
     console.log(`🤖 AI Provider: ${AI_PROVIDER}`);
     console.log(`⚙️ Config: ${CONCURRENCY} workers, ${MAX_SITES} max sites`);
 });
+
 
 
