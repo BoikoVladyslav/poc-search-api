@@ -13,11 +13,23 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-// === CONFIG ===
-const CONCURRENCY = 5;
-const PAGE_TIMEOUT = 15000;
+const CONCURRENCY = 7;
+const PAGE_TIMEOUT = 12000;
 const MAX_SITES = 20;
 const AI_PROVIDER = process.env.OPENAI_API_KEY ? 'openai' : 'gemini';
+
+const PRIORITY_DOMAINS = [
+    'vistaprint.com.au',
+    'vistaprint.com',
+    'snapfish.com.au',
+    'snapfish.com',
+    'stickermule.com',
+    'canva.com',
+    'printplace.com',
+    'moo.com',
+    'zazzle.com.au',
+    'redbubble.com'
+];
 
 const BLACKLIST = [
     'cremation', 'funeral', 'burial', 'service', 'consultation', 'booking', 
@@ -44,9 +56,8 @@ if (process.env.OPENAI_API_KEY) {
     openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 }
 
-console.log(`🚀 AU SEARCH SPEED-UP: ${AI_PROVIDER.toUpperCase()} | Top ${MAX_SITES}`);
+console.log(`🚀 AU SEARCH v3.0 SPEED: ${AI_PROVIDER.toUpperCase()} | ${CONCURRENCY} workers | Priority mode`);
 
-// ============ UI (БЕЗ ЗМІН) ============
 app.get('/', (req, res) => {
     res.send(`
 <!DOCTYPE html>
@@ -54,9 +65,12 @@ app.get('/', (req, res) => {
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>AU Product Search</title>
+    <title>AU Product Search v3.0</title>
     <style>
         body { font-family: -apple-system, system-ui, sans-serif; background: #f8fafc; padding: 20px; max-width: 1200px; margin: 0 auto; color: #334155; }
+        .header { background: white; padding: 20px; border-radius: 12px; margin-bottom: 20px; box-shadow: 0 2px 4px rgba(0,0,0,0.05); }
+        .header h1 { margin: 0 0 5px 0; font-size: 24px; color: #0f172a; }
+        .header .version { font-size: 12px; color: #64748b; }
         .search-box { background: white; padding: 20px; border-radius: 12px; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.05); display: flex; gap: 10px; margin-bottom: 20px; }
         input { flex: 1; padding: 14px; border: 2px solid #e2e8f0; border-radius: 8px; font-size: 16px; outline: none; transition: 0.2s; }
         input:focus { border-color: #3b82f6; }
@@ -72,81 +86,109 @@ app.get('/', (req, res) => {
         .img-wrap { height: 220px; padding: 10px; display: flex; align-items: center; justify-content: center; background: #fff; border-bottom: 1px solid #f1f5f9; position: relative; }
         .card img { max-width: 100%; max-height: 100%; object-fit: contain; }
         .badge { position: absolute; top: 10px; left: 10px; font-size: 10px; background: rgba(59,130,246,0.9); padding: 4px 8px; border-radius: 4px; color: white; font-weight: bold; }
+        .priority-badge { position: absolute; top: 10px; right: 10px; font-size: 10px; background: rgba(34,197,94,0.9); padding: 4px 8px; border-radius: 4px; color: white; font-weight: bold; }
         .info { padding: 16px; flex: 1; display: flex; flex-direction: column; }
         .title { font-size: 14px; margin-bottom: 8px; font-weight: 600; color: #0f172a; line-height: 1.4; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
         .meta-row { display: flex; gap: 8px; margin-bottom: 12px; flex-wrap: wrap; min-height: 24px; }
         .tag { font-size: 11px; background: #f1f5f9; padding: 4px 8px; border-radius: 4px; color: #475569; font-weight: 500; }
         .price { font-size: 20px; font-weight: 700; color: #16a34a; margin-top: auto; }
+        .price.unavailable { color: #94a3b8; font-size: 16px; }
         .btn-link { margin-top: 12px; text-align: center; background: #f8fafc; color: #334155; text-decoration: none; padding: 12px; border-radius: 8px; font-size: 13px; font-weight: 600; transition: 0.2s; border: 1px solid #e2e8f0; }
         .btn-link:hover { background: #e2e8f0; color: #0f172a; }
     </style>
 </head>
 <body>
+    <div class="header">
+        <h1>🚀 Australian Product Search</h1>
+        <div class="version">v3.0 Speed Edition | First results in 3-5 seconds</div>
+    </div>
+    
     <div class="search-box">
         <input type="text" id="keyword" placeholder="Search Australian products..." onkeypress="if(event.key==='Enter') run()">
         <button onclick="run()" id="btn">Search</button>
     </div>
+    
     <div class="status-bar"><span id="status">Ready</span><span id="counter">0 products from 0 sites</span></div>
     <div class="progress-track"><div class="progress-fill" id="progress"></div></div>
     <div id="results" class="grid"></div>
+
     <script>
         async function run() {
             const keyword = document.getElementById('keyword').value;
             if(!keyword) return;
+            
             const btn = document.getElementById('btn');
             const status = document.getElementById('status');
             const counter = document.getElementById('counter');
             const progress = document.getElementById('progress');
             const results = document.getElementById('results');
+            
             btn.disabled = true;
             results.innerHTML = '';
             progress.style.width = '2%';
-            status.textContent = 'Searching Australian sites...';
+            status.textContent = 'Searching...';
+            
             let productCount = 0;
             let siteCount = 0;
+
             try {
                 const response = await fetch('/api/search', {
                     method: 'POST',
                     headers: {'Content-Type': 'application/json'},
                     body: JSON.stringify({ keyword })
                 });
+                
                 const reader = response.body.getReader();
                 const decoder = new TextDecoder();
+                
                 while(true) {
                     const {done, value} = await reader.read();
                     if(done) break;
+                    
                     const chunk = decoder.decode(value, {stream: true});
                     const lines = chunk.split('\\n');
+                    
                     for(const line of lines) {
                         if(line.startsWith('data: ')) {
                             try {
                                 const data = JSON.parse(line.slice(6));
+                                
                                 if(data.type === 'progress') {
                                     status.textContent = data.msg;
                                     if(data.total > 0) progress.style.width = Math.round((data.done / data.total) * 100) + '%';
                                 }
+                                
                                 if(data.type === 'product') {
                                     productCount++;
+                                    siteCount++;
                                     counter.textContent = \`\${productCount} products from \${siteCount} sites\`;
                                     const p = data.p;
                                     const domain = new URL(p.productUrl).hostname.replace('www.','');
+                                    const isPriority = p.priority || false;
+                                    
                                     const sizeHtml = p.size ? \`<div class="tag">📏 \${p.size}</div>\` : '';
+                                    const priorityBadge = isPriority ? '<div class="priority-badge">⚡ FAST</div>' : '';
+                                    const priceClass = p.price === 'Not available' ? 'price unavailable' : 'price';
+                                    
                                     results.insertAdjacentHTML('beforeend', \`
                                         <div class="card">
                                             <div class="img-wrap">
                                                 <div class="badge">\${domain}</div>
+                                                \${priorityBadge}
                                                 <img src="\${p.imageUrl}" loading="lazy" onerror="this.src='https://placehold.co/400x400/e2e8f0/64748b?text=No+Image'">
                                             </div>
                                             <div class="info">
                                                 <div class="title" title="\${p.title}">\${p.title}</div>
                                                 <div class="meta-row">\${sizeHtml}</div>
-                                                <div class="price">\${p.price}</div>
+                                                <div class="\${priceClass}">\${p.price}</div>
                                                 <a href="\${p.productUrl}" target="_blank" class="btn-link">View Product</a>
                                             </div>
-                                        </div>\`);
+                                        </div>
+                                    \`);
                                 }
+                                
                                 if(data.type === 'done') {
-                                    status.textContent = \`Complete! Scanned \${data.total} sites.\`;
+                                    status.textContent = \`Complete! Found \${productCount} products.\`;
                                     progress.style.width = '100%';
                                     btn.disabled = false;
                                 }
@@ -165,7 +207,6 @@ app.get('/', (req, res) => {
     `);
 });
 
-// ============ SEARCH API ============
 app.post('/api/search', async (req, res) => {
     const { keyword } = req.body;
     
@@ -185,11 +226,8 @@ app.post('/api/search', async (req, res) => {
     const sentProducts = new Map();
     
     try {
-        send('progress', { msg: 'Initializing engines...', pct: 5 });
+        send('progress', { msg: 'Initializing...', done: 0, total: 20 });
         
-        // 🚀 ОПТИМІЗАЦІЯ 1: Паралельний запуск Google Search та Браузера
-        // Ми не чекаємо поки Гугл знайде посилання, щоб відкрити браузер.
-        // Це економить близько 2-3 секунд на старті.
         const [urls, browserInstance] = await Promise.all([
             googleSearch(keyword),
             puppeteer.launch({
@@ -202,7 +240,7 @@ app.post('/api/search', async (req, res) => {
                     '--disable-gpu',
                     '--disable-web-security',
                     '--disable-features=IsolateOrigins,site-per-process',
-                    '--blink-settings=imagesEnabled=false' // Блокуємо картинки глобально для швидкості
+                    '--blink-settings=imagesEnabled=false'
                 ]
             })
         ]);
@@ -210,65 +248,84 @@ app.post('/api/search', async (req, res) => {
         browser = browserInstance;
         
         if (urls.length === 0) {
-            send('progress', { msg: 'No results from Google', pct: 100 });
-            send('done', { sites: 0 });
+            send('progress', { msg: 'No results from Google' });
+            send('done', { total: 0 });
             return res.end();
         }
 
         const uniqueUrls = getUniqueDomainUrls(urls, MAX_SITES);
-        console.log(`🔗 Processing ${uniqueUrls.length} unique domains`);
+        
+        const { priorityUrls, regularUrls } = sortUrlsByPriority(uniqueUrls);
+        
+        console.log(`⚡ Priority sites: ${priorityUrls.length} | Regular: ${regularUrls.length}`);
 
-        send('progress', { msg: `Found ${uniqueUrls.length} sites. Scanning...`, pct: 10 });
+        send('progress', { msg: `Found ${uniqueUrls.length} sites. Scanning priority sites first...`, done: 0, total: uniqueUrls.length });
 
-        // Process sites
+        const allUrls = [...priorityUrls, ...regularUrls];
+        
         let completed = 0;
-        const queue = [...uniqueUrls];
+        const queue = [...allUrls];
         
         const processNext = async () => {
             while (queue.length > 0) {
-                const url = queue.shift();
-                if (!url) continue;
+                const urlObj = queue.shift();
+                if (!urlObj) continue;
                 
-                const domain = getDomain(url);
+                const domain = getDomain(urlObj.url);
                 if (sentProducts.has(domain)) {
                     completed++;
                     continue;
                 }
 
                 try {
-                    // console.log(`Scanning: ${url}`);
-                    const product = await extractProductFromSite(browser, url, keyword);
+                    const product = await extractProductFromSite(browser, urlObj.url, keyword);
                     
                     if (product && isValidProduct(product)) {
+                        product.priority = urlObj.isPriority;
                         sentProducts.set(domain, true);
-                        send('product', { p: product }); // UI чекає 'p'
+                        send('product', { p: product });
                     }
                 } catch (e) {
-                    // console.log(`Error: ${e.message}`);
+                    console.error(`Error ${urlObj.url}:`, e.message);
                 }
                 
                 completed++;
-                const pct = Math.round(10 + (completed / uniqueUrls.length) * 85);
-                send('progress', { msg: `Scanning sites... (${completed}/${uniqueUrls.length})`, pct });
+                send('progress', { msg: `Scanning...`, done: completed, total: allUrls.length });
             }
         };
 
         const workers = Array(CONCURRENCY).fill(null).map(() => processNext());
         await Promise.all(workers);
 
-        send('progress', { msg: 'Search complete!', pct: 100 });
-        send('done', { total: completed, sites: sentProducts.size });
+        send('done', { total: completed });
 
     } catch (e) {
-        console.error('❌ API Error:', e);
-        send('progress', { msg: 'Error: ' + e.message, pct: 100 });
+        console.error('API Error:', e);
+        send('progress', { msg: 'Error: ' + e.message });
     } finally {
         if (browser) await browser.close().catch(() => {});
         res.end();
     }
 });
 
-// ============ EXTRACT PRODUCT (OPTIMIZED) ============
+function sortUrlsByPriority(urls) {
+    const priorityUrls = [];
+    const regularUrls = [];
+    
+    urls.forEach(url => {
+        const domain = getDomain(url);
+        const isPriority = PRIORITY_DOMAINS.some(pd => domain.includes(pd) || pd.includes(domain));
+        
+        if (isPriority) {
+            priorityUrls.push({ url, isPriority: true });
+        } else {
+            regularUrls.push({ url, isPriority: false });
+        }
+    });
+    
+    return { priorityUrls, regularUrls };
+}
+
 async function extractProductFromSite(browser, url, keyword) {
     let page = null;
     try {
@@ -277,7 +334,6 @@ async function extractProductFromSite(browser, url, keyword) {
         await page.setRequestInterception(true);
         page.on('request', req => {
             const type = req.resourceType();
-            // Додали 'other', 'script' (опціонально, але краще залишити скрипти для цін)
             if (['image', 'media', 'font'].includes(type)) {
                 req.abort();
             } else {
@@ -286,21 +342,18 @@ async function extractProductFromSite(browser, url, keyword) {
         });
 
         await page.setUserAgent(new UserAgent({ deviceCategory: 'desktop' }).toString());
-        await page.setViewport({ width: 1366, height: 768 }); // Стандартний розмір
+        await page.setViewport({ width: 1366, height: 768 });
         
         await page.goto(url, { 
             waitUntil: 'networkidle2', 
             timeout: PAGE_TIMEOUT 
         });
 
-        // 🚀 ОПТИМІЗАЦІЯ 2: Зменшення затримок
-        // networkidle2 вже гарантує, що мережа заспокоїлась. Чекаємо мінімум.
-        await new Promise(r => setTimeout(r, 500)); // Було 1500
+        await new Promise(r => setTimeout(r, 300));
 
-        // Швидший скрол
         await page.evaluate(async () => {
             window.scrollBy(0, 1000);
-            await new Promise(r => setTimeout(r, 200)); // Було 300
+            await new Promise(r => setTimeout(r, 150));
             window.scrollBy(0, 1000);
         });
 
@@ -328,16 +381,14 @@ async function extractProductFromSite(browser, url, keyword) {
         const $ = cheerio.load(html);
         const baseUrl = new URL(finalUrl).origin;
         
-        // 1. JSON-LD
         const jsonLdProducts = extractJsonLdProducts($, baseUrl);
         
-        // 2. AI Parsing (if needed or for better details)
         $('script, style, noscript, svg, iframe, header, footer, nav, .popup, .modal, .cookie').remove();
         let bodyHtml = $('body').html() || '';
         
-        if (hiddenOptions) bodyHtml += `\n`;
+        if (hiddenOptions) bodyHtml += `\n<meta hidden-sizes="${hiddenOptions}">`;
         
-        const cleanedHtml = bodyHtml.replace(/\s+/g, ' ').substring(0, 70000);
+        const cleanedHtml = bodyHtml.replace(/\s+/g, ' ').substring(0, 50000);
         
         let aiProducts = [];
         if (cleanedHtml.length > 500) {
@@ -347,7 +398,6 @@ async function extractProductFromSite(browser, url, keyword) {
         const allProducts = [...jsonLdProducts, ...aiProducts];
         if (allProducts.length === 0) return null;
 
-        // Filtering & Sorting (Ваш логіка, без змін)
         const validProducts = allProducts
             .filter(p => {
                 if (!p.title || p.title.length < 3) return false;
@@ -369,9 +419,9 @@ async function extractProductFromSite(browser, url, keyword) {
             })
             .sort((a, b) => {
                 let scoreA = 0, scoreB = 0;
-                if (a.price && a.price !== 'Check Site') scoreA += 3;
+                if (a.price && a.price !== 'Check Site' && a.price !== 'Not available') scoreA += 3;
                 if (a.size) scoreA += 2;
-                if (b.price && b.price !== 'Check Site') scoreB += 3;
+                if (b.price && b.price !== 'Check Site' && b.price !== 'Not available') scoreB += 3;
                 if (b.size) scoreB += 2;
                 return scoreB - scoreA;
             });
@@ -392,8 +442,6 @@ async function extractProductFromSite(browser, url, keyword) {
         throw e;
     }
 }
-
-// ... (JSON-LD Extraction, AI Parsing, Google Search, Helpers - залишаються без змін логіки, вже виправлені в минулому) ...
 
 function extractJsonLdProducts($, baseUrl) {
     const products = [];
@@ -430,8 +478,24 @@ function parseJsonLdProduct(item, baseUrl) {
     if (item.offers) {
         const offers = Array.isArray(item.offers) ? item.offers : [item.offers];
         for (const o of offers) {
-            if (o.price) { price = `$${o.price} ${o.priceCurrency || 'AUD'}`; break; }
-            if (o.lowPrice) { price = `From $${o.lowPrice} ${o.priceCurrency || 'AUD'}`; break; }
+            if (o.price !== undefined && o.price !== null) {
+                const priceNum = parseFloat(o.price);
+                if (priceNum === 0 || priceNum === 0.0) {
+                    price = 'Not available';
+                } else {
+                    price = `$${o.price} ${o.priceCurrency || 'AUD'}`;
+                }
+                break;
+            }
+            if (o.lowPrice !== undefined && o.lowPrice !== null) {
+                const priceNum = parseFloat(o.lowPrice);
+                if (priceNum === 0 || priceNum === 0.0) {
+                    price = 'Not available';
+                } else {
+                    price = `From $${o.lowPrice} ${o.priceCurrency || 'AUD'}`;
+                }
+                break;
+            }
         }
     }
 
@@ -447,7 +511,13 @@ function parseJsonLdProduct(item, baseUrl) {
     }
 
     if (!image) return null;
-    return { title: item.name, price, size, imageUrl: normalizeUrl(image, baseUrl), productUrl: normalizeUrl(item.url || '', baseUrl) };
+    return { 
+        title: item.name, 
+        price: price, 
+        size: size, 
+        imageUrl: normalizeUrl(image, baseUrl), 
+        productUrl: normalizeUrl(item.url || '', baseUrl) 
+    };
 }
 
 async function parseWithAI(html, url, keyword) {
@@ -455,7 +525,8 @@ async function parseWithAI(html, url, keyword) {
 Rules:
 1. Ignore services, courses, rentals.
 2. Get Size/Dim if possible.
-3. Return JSON: [{"title":"...","price":"...","size":"...","imageUrl":"...","productUrl":"..."}]
+3. If price is $0 or 0.00, return "Not available" as price.
+4. Return JSON: [{"title":"...","price":"...","size":"...","imageUrl":"...","productUrl":"..."}]
 HTML: ${html}`;
 
     try {
@@ -464,13 +535,15 @@ HTML: ${html}`;
             const completion = await openai.chat.completions.create({
                 model: 'gpt-4o-mini',
                 messages: [{ role: 'user', content: prompt }],
-                temperature: 0, max_tokens: 1000
+                temperature: 0, 
+                max_tokens: 800
             });
             content = completion.choices[0].message.content;
         } else {
             const resp = await axios.post(
                 `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${process.env.GEMINI_API_KEY}`,
-                { contents: [{ parts: [{ text: prompt }] }] }
+                { contents: [{ parts: [{ text: prompt }] }] },
+                { timeout: 8000 }
             );
             content = resp.data.candidates?.[0]?.content?.parts?.[0]?.text;
         }
@@ -479,14 +552,31 @@ HTML: ${html}`;
         const start = jsonStr.indexOf('[');
         const end = jsonStr.lastIndexOf(']');
         if (start === -1) return [];
+        
         const raw = JSON.parse(jsonStr.substring(start, end + 1));
         const baseUrl = new URL(url).origin;
-        return raw.map(p => ({
-            title: p.title, price: p.price, size: p.size,
-            imageUrl: normalizeUrl(p.imageUrl, baseUrl),
-            productUrl: normalizeUrl(p.productUrl, baseUrl)
-        }));
-    } catch { return []; }
+        
+        return raw.map(p => {
+            let price = p.price;
+            if (price) {
+                const priceStr = price.toString().toLowerCase();
+                if (priceStr.includes('$0') || priceStr === '0' || priceStr === '0.00' || priceStr.includes('$0.00')) {
+                    price = 'Not available';
+                }
+            }
+            
+            return {
+                title: p.title, 
+                price: price, 
+                size: p.size,
+                imageUrl: normalizeUrl(p.imageUrl, baseUrl),
+                productUrl: normalizeUrl(p.productUrl, baseUrl)
+            };
+        });
+    } catch (e) { 
+        console.error('AI parse error:', e.message);
+        return []; 
+    }
 }
 
 function normalizeUrl(urlStr, baseUrl) {
@@ -500,29 +590,39 @@ function normalizeUrl(urlStr, baseUrl) {
     } catch { return null; }
 }
 
-function getDomain(url) { try { return new URL(url).hostname.replace('www.', ''); } catch { return url; } }
+function getDomain(url) { 
+    try { return new URL(url).hostname.replace('www.', ''); } 
+    catch { return url; } 
+}
+
 function getUniqueDomainUrls(urls, max) {
     const seen = new Set();
     const unique = [];
     for (const url of urls) {
         const d = getDomain(url);
-        if (!seen.has(d)) { seen.add(d); unique.push(url); if (unique.length >= max) break; }
+        if (!seen.has(d)) { 
+            seen.add(d); 
+            unique.push(url); 
+            if (unique.length >= max) break; 
+        }
     }
     return unique;
 }
-function isValidProduct(p) { return p && p.title && p.imageUrl && p.productUrl; }
 
-// Fixed Google Search
+function isValidProduct(p) { 
+    return p && p.title && p.imageUrl && p.productUrl; 
+}
+
 async function googleSearch(keyword) {
     const key = process.env.GOOGLE_API_KEY;
     const cx = process.env.GOOGLE_CX;
-    const query = `${keyword} buy`; // Removed manual encoding
+    const query = `${keyword} buy`;
     
     const fetchPage = async (start) => {
         try {
             const res = await axios.get('https://www.googleapis.com/customsearch/v1', {
                 params: { key, cx, q: query, num: 10, start, gl: 'au', cr: 'countryAU' },
-                timeout: 8000
+                timeout: 6000
             });
             return res.data.items || [];
         } catch { return []; }
@@ -536,13 +636,9 @@ async function googleSearch(keyword) {
     } catch { return []; }
 }
 
-// ============ START SERVER ============
 const PORT = process.env.PORT || 8080;
 app.listen(PORT, () => {
     console.log(`✅ Server running on port ${PORT}`);
-    console.log(`🤖 AI Provider: ${AI_PROVIDER}`);
-    console.log(`⚙️ Config: ${CONCURRENCY} workers, ${MAX_SITES} max sites`);
+    console.log(`⚡ Priority domains: ${PRIORITY_DOMAINS.length}`);
+    console.log(`🚀 Speed mode: First results in 3-5 seconds`);
 });
-
-
-
