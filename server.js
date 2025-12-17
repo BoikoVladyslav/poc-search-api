@@ -18,14 +18,6 @@ const PAGE_TIMEOUT = 15000;
 const MAX_SITES = 20;
 const AI_PROVIDER = process.env.OPENAI_API_KEY ? 'openai' : 'gemini';
 
-// ============ MARGIN CONFIGURATION ============
-const MARGIN_THRESHOLDS = [
-    [500, 100],    // Якщо ціна <= 500 → маржа 100%
-    [1500, 70],    // Якщо ціна <= 1500 → маржа 70%
-    [5000, 30]     // Якщо ціна <= 5000 → маржа 30%
-];
-const DEFAULT_MARGIN = 20; // Якщо жоден threshold не підійшов → 20%
-
 const PRIORITY_DOMAINS = [
     'vistaprint.com.au', 'vistaprint.com',
     'snapfish.com.au', 'snapfish.com',
@@ -75,12 +67,18 @@ app.get('/', (req, res) => {
         body { font-family: -apple-system, system-ui, sans-serif; background: #f8fafc; padding: 20px; max-width: 1200px; margin: 0 auto; color: #334155; }
         .header { background: white; padding: 20px; border-radius: 12px; margin-bottom: 20px; box-shadow: 0 2px 4px rgba(0,0,0,0.05); }
         .header h1 { margin: 0; font-size: 24px; color: #0f172a; }
-        .search-box { background: white; padding: 20px; border-radius: 12px; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.05); display: flex; gap: 10px; margin-bottom: 20px; }
-        input { flex: 1; padding: 14px; border: 2px solid #e2e8f0; border-radius: 8px; font-size: 16px; outline: none; transition: 0.2s; }
-        input:focus { border-color: #3b82f6; }
+        .search-box { background: white; padding: 20px; border-radius: 12px; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.05); margin-bottom: 20px; }
+        .input-group { margin-bottom: 15px; }
+        .input-group label { display: block; margin-bottom: 5px; font-weight: 600; font-size: 14px; color: #334155; }
+        input, textarea { width: 100%; padding: 12px; border: 2px solid #e2e8f0; border-radius: 8px; font-size: 14px; outline: none; transition: 0.2s; font-family: monospace; }
+        input:focus, textarea:focus { border-color: #3b82f6; }
+        textarea { resize: vertical; min-height: 80px; }
+        .search-row { display: flex; gap: 10px; }
+        .search-row input { flex: 1; }
         button { padding: 14px 32px; background: #3b82f6; color: white; border: none; border-radius: 8px; font-weight: 600; cursor: pointer; transition: 0.2s; }
         button:hover { background: #2563eb; }
         button:disabled { background: #94a3b8; cursor: not-allowed; }
+        .hint { font-size: 12px; color: #64748b; margin-top: 5px; }
         .status-bar { display: flex; justify-content: space-between; margin-bottom: 10px; font-size: 14px; color: #64748b; font-weight: 500; }
         .progress-track { height: 6px; background: #e2e8f0; border-radius: 3px; overflow: hidden; margin-bottom: 24px; }
         .progress-fill { height: 100%; background: #3b82f6; width: 0%; transition: width 0.3s; }
@@ -94,23 +92,38 @@ app.get('/', (req, res) => {
         .title { font-size: 14px; margin-bottom: 8px; font-weight: 600; color: #0f172a; line-height: 1.4; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
         .meta-row { display: flex; gap: 8px; margin-bottom: 12px; flex-wrap: wrap; min-height: 24px; }
         .tag { font-size: 11px; background: #f1f5f9; padding: 4px 8px; border-radius: 4px; color: #475569; font-weight: 500; }
-        .price-container { margin-top: auto; }
-        .price-original { font-size: 12px; color: #94a3b8; text-decoration: line-through; margin-bottom: 4px; }
-        .price { font-size: 20px; font-weight: 700; color: #16a34a; }
+        .price { font-size: 20px; font-weight: 700; color: #16a34a; margin-top: auto; }
         .price.unavailable { color: #94a3b8; font-size: 16px; }
-        .margin-badge { display: inline-block; margin-left: 8px; font-size: 11px; background: #dcfce7; color: #166534; padding: 2px 6px; border-radius: 4px; font-weight: 600; }
+        .price-info { display: flex; flex-direction: column; gap: 4px; }
+        .price-original { font-size: 12px; color: #94a3b8; text-decoration: line-through; }
         .btn-link { margin-top: 12px; text-align: center; background: #f8fafc; color: #334155; text-decoration: none; padding: 12px; border-radius: 8px; font-size: 13px; font-weight: 600; transition: 0.2s; border: 1px solid #e2e8f0; }
         .btn-link:hover { background: #e2e8f0; color: #0f172a; }
     </style>
 </head>
 <body>
     <div class="header">
-        <h1>Product Search API</h1>
+        <h1>🔍 Product Search API with Dynamic Margin</h1>
     </div>
     
     <div class="search-box">
-        <input type="text" id="keyword" placeholder="Enter product name..." onkeypress="if(event.key==='Enter') run()">
-        <button onclick="run()" id="btn">Search</button>
+        <div class="input-group">
+            <label>Product Keyword</label>
+            <input type="text" id="keyword" placeholder="e.g., custom stickers">
+        </div>
+        
+        <div class="input-group">
+            <label>Margin Thresholds (JSON array)</label>
+            <textarea id="thresholds" placeholder='[[500, 100], [1500, 70], [5000, 30]]'>[[500, 100], [1500, 70], [5000, 30]]</textarea>
+            <div class="hint">Format: [[max_price, margin_%], ...] - Max 10 thresholds</div>
+        </div>
+        
+        <div class="input-group">
+            <label>Default Margin (%)</label>
+            <input type="number" id="defaultMargin" value="20" min="0" max="500">
+            <div class="hint">Applied when no threshold matches</div>
+        </div>
+        
+        <button onclick="run()" id="btn">Search with Margin</button>
     </div>
     
     <div class="status-bar"><span id="status">Ready</span><span id="counter">0 products</span></div>
@@ -119,8 +132,19 @@ app.get('/', (req, res) => {
 
     <script>
         async function run() {
-            const keyword = document.getElementById('keyword').value;
-            if(!keyword) return;
+            const keyword = document.getElementById('keyword').value.trim();
+            if(!keyword) { alert('Please enter a keyword'); return; }
+            
+            let thresholds = [];
+            try {
+                thresholds = JSON.parse(document.getElementById('thresholds').value || '[]');
+                if (!Array.isArray(thresholds)) throw new Error('Must be array');
+            } catch(e) {
+                alert('Invalid thresholds JSON format');
+                return;
+            }
+            
+            const defaultMargin = parseFloat(document.getElementById('defaultMargin').value) || 0;
             
             const btn = document.getElementById('btn');
             const status = document.getElementById('status');
@@ -139,7 +163,11 @@ app.get('/', (req, res) => {
                 const response = await fetch('/api/search', {
                     method: 'POST',
                     headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify({ keyword })
+                    body: JSON.stringify({ 
+                        keyword,
+                        margin_thresholds: thresholds,
+                        default_margin: defaultMargin
+                    })
                 });
                 
                 const reader = response.body.getReader();
@@ -167,19 +195,14 @@ app.get('/', (req, res) => {
                                     const p = data.p;
                                     const domain = new URL(p.productUrl).hostname.replace('www.','');
                                     const sizeHtml = p.size ? '<div class="tag">📏 ' + p.size + '</div>' : '';
+                                    const priceClass = p.finalPrice === 'Not available' || p.finalPrice === 'Check Site' ? 'price unavailable' : 'price';
                                     
-                                    // Price rendering
-                                    let priceHtml = '';
-                                    if (p.finalPrice === 'Not available' || p.finalPrice === 'Check Site') {
-                                        priceHtml = '<div class="price-container"><div class="price unavailable">' + p.finalPrice + '</div></div>';
-                                    } else if (p.originalPrice && p.originalPrice !== p.finalPrice) {
-                                        const marginBadge = p.appliedMargin ? '<span class="margin-badge">+' + p.appliedMargin + '%</span>' : '';
-                                        priceHtml = '<div class="price-container">' +
+                                    let priceHtml = '<div class="' + priceClass + '">' + p.finalPrice + '</div>';
+                                    if (p.originalPrice && p.originalPrice !== p.finalPrice) {
+                                        priceHtml = '<div class="price-info">' +
                                             '<div class="price-original">Base: ' + p.originalPrice + '</div>' +
-                                            '<div class="price">' + p.finalPrice + marginBadge + '</div>' +
+                                            '<div class="' + priceClass + '">' + p.finalPrice + '</div>' +
                                             '</div>';
-                                    } else {
-                                        priceHtml = '<div class="price-container"><div class="price">' + p.finalPrice + '</div></div>';
                                     }
                                     
                                     counter.textContent = productCount + ' products found';
@@ -219,12 +242,50 @@ app.get('/', (req, res) => {
     `);
 });
 
-// ============ API SEARCH ============
+// ============ API SEARCH WITH MARGIN ============
 app.post('/api/search', async (req, res) => {
-    const { keyword } = req.body;
+    const { keyword, margin_thresholds, default_margin } = req.body;
     
+    // Валідація
     if (!keyword || keyword.trim().length < 2) {
         return res.status(400).json({ error: 'Keyword required' });
+    }
+
+    // Валідація margin параметрів
+    let thresholds = [];
+    let defaultMargin = 0;
+
+    if (margin_thresholds) {
+        if (!Array.isArray(margin_thresholds)) {
+            return res.status(400).json({ error: 'margin_thresholds must be array' });
+        }
+        if (margin_thresholds.length > 10) {
+            return res.status(400).json({ error: 'Maximum 10 thresholds allowed' });
+        }
+        
+        // Валідація структури кожного threshold
+        for (const threshold of margin_thresholds) {
+            if (!Array.isArray(threshold) || threshold.length !== 2) {
+                return res.status(400).json({ error: 'Each threshold must be [max_price, margin_%]' });
+            }
+            const [maxPrice, margin] = threshold;
+            if (typeof maxPrice !== 'number' || typeof margin !== 'number') {
+                return res.status(400).json({ error: 'Threshold values must be numbers' });
+            }
+            if (maxPrice <= 0 || margin < 0) {
+                return res.status(400).json({ error: 'Invalid threshold values' });
+            }
+        }
+        
+        // Сортуємо thresholds по зростанню max_price для коректної роботи
+        thresholds = margin_thresholds.sort((a, b) => a[0] - b[0]);
+    }
+
+    if (default_margin !== undefined) {
+        if (typeof default_margin !== 'number' || default_margin < 0) {
+            return res.status(400).json({ error: 'default_margin must be non-negative number' });
+        }
+        defaultMargin = default_margin;
     }
 
     res.setHeader('Content-Type', 'text/event-stream');
@@ -292,8 +353,8 @@ app.post('/api/search', async (req, res) => {
                     const product = await extractProductFromSite(browser, url, keyword);
                     
                     if (product && isValidProduct(product)) {
-                        // ✅ ЗАСТОСОВУЄМО МАРЖУ АВТОМАТИЧНО
-                        const productWithMargin = applyMarginToProduct(product);
+                        // Застосовуємо маржу
+                        const productWithMargin = applyMarginToProduct(product, thresholds, defaultMargin);
                         
                         sentProducts.set(domain, true);
                         send('product', { p: productWithMargin });
@@ -320,12 +381,12 @@ app.post('/api/search', async (req, res) => {
     }
 });
 
-// ============ MARGIN LOGIC ============
+// ============ MARGIN APPLICATION ============
 
 /**
  * Застосовує маржу до продукту
  */
-function applyMarginToProduct(product) {
+function applyMarginToProduct(product, thresholds, defaultMargin) {
     const originalPrice = product.price;
     
     // Парсимо ціну
@@ -340,10 +401,8 @@ function applyMarginToProduct(product) {
         };
     }
     
-    // Знаходимо відповідну маржу
-    const margin = findApplicableMargin(parsedPrice);
-    
-    // Рахуємо фінальну ціну
+    // Застосовуємо маржу
+    const margin = findApplicableMargin(parsedPrice, thresholds, defaultMargin);
     const finalPrice = parsedPrice + (parsedPrice * margin / 100);
     
     // Форматуємо ціну назад
@@ -361,20 +420,21 @@ function applyMarginToProduct(product) {
 /**
  * Знаходить відповідну маржу для ціни
  */
-function findApplicableMargin(price) {
-    // Перевіряємо кожен threshold по порядку
-    for (const [maxPrice, margin] of MARGIN_THRESHOLDS) {
+function findApplicableMargin(price, thresholds, defaultMargin) {
+    // Thresholds вже відсортовані по зростанню
+    for (const [maxPrice, margin] of thresholds) {
         if (price <= maxPrice) {
             return margin;
         }
     }
     
-    // Жоден threshold не підійшов - повертаємо дефолтну маржу
-    return DEFAULT_MARGIN;
+    // Жоден threshold не підійшов
+    return defaultMargin;
 }
 
 /**
  * Парсить ціну з рядка
+ * Повертає число або null
  */
 function parsePrice(priceStr) {
     if (!priceStr || typeof priceStr !== 'string') return null;
@@ -382,7 +442,7 @@ function parsePrice(priceStr) {
     // Якщо це спеціальні значення
     if (priceStr === 'Check Site' || priceStr === 'Not available') return null;
     
-    // Видаляємо "From", валюту, пробіли, залишаємо тільки цифри
+    // Видаляємо "From", валюту, пробіли
     const cleaned = priceStr
         .replace(/from/gi, '')
         .replace(/[^0-9.,]/g, '')
@@ -390,8 +450,8 @@ function parsePrice(priceStr) {
     
     if (!cleaned) return null;
     
-    // Конвертуємо в число (враховуємо кому як розділювач тисяч)
-    const num = parseFloat(cleaned.replace(/,/g, ''));
+    // Конвертуємо в число
+    const num = parseFloat(cleaned.replace(',', ''));
     
     return isNaN(num) ? null : num;
 }
@@ -417,7 +477,7 @@ function formatPrice(price, currency = 'AUD') {
     return `$${rounded.toFixed(2)} ${currency}`;
 }
 
-// ============ РЕШТА КОДУ (БЕЗ ЗМІН) ============
+// ============ РЕШТА ФУНКЦІЙ (без змін) ============
 
 function sortUrlsByPriority(urls) {
     const priorityUrls = [];
